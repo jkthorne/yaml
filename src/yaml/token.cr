@@ -23,7 +23,7 @@ module Yaml
     SCALAR
   end
 
-  class Token
+  struct Token
     property kind : TokenKind
     property start_mark : Mark
     property end_mark : Mark
