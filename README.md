@@ -190,6 +190,26 @@ Events --> Nodes::Parser --> Document tree
 - No schema/type resolution (scalars are always strings — apply your own schema layer)
 - Simple key limit of 1024 characters (matching libyaml)
 
+## Benchmarks
+
+Run the full benchmark suite (requires `--release` for meaningful results):
+
+```sh
+bash bench/run.sh
+```
+
+Or run individual benchmarks:
+
+```sh
+crystal run --release bench/parse_bench.cr     # parsing (Nodes + PullParser)
+crystal run --release bench/scan_bench.cr      # tokenizer isolation
+crystal run --release bench/emit_bench.cr      # emitter / Builder
+crystal run --release bench/roundtrip_bench.cr # parse → emit → parse
+crystal run --release bench/compare_bench.cr   # vs Crystal stdlib (libyaml)
+```
+
+Each benchmark reports iterations/second (`Benchmark.ips`) and memory allocations (`Benchmark.memory`). Fixtures are generated programmatically at runtime — no static files to maintain.
+
 ## Development
 
 ```sh
