@@ -178,19 +178,19 @@ describe "UTF-16 encoding support" do
   describe "original encoding detection" do
     it "detects UTF-16LE encoding" do
       bytes = encode_utf16le("hello")
-      reader = Yaml::Reader.new(IO::Memory.new(bytes))
-      reader.original_encoding.should eq(Yaml::Encoding::UTF16LE)
+      scanner = Yaml::Scanner.new(IO::Memory.new(bytes))
+      scanner.original_encoding.should eq(Yaml::Encoding::UTF16LE)
     end
 
     it "detects UTF-16BE encoding" do
       bytes = encode_utf16be("hello")
-      reader = Yaml::Reader.new(IO::Memory.new(bytes))
-      reader.original_encoding.should eq(Yaml::Encoding::UTF16BE)
+      scanner = Yaml::Scanner.new(IO::Memory.new(bytes))
+      scanner.original_encoding.should eq(Yaml::Encoding::UTF16BE)
     end
 
     it "detects UTF-8 for plain input" do
-      reader = Yaml::Reader.new("hello")
-      reader.original_encoding.should eq(Yaml::Encoding::UTF8)
+      scanner = Yaml::Scanner.new("hello")
+      scanner.original_encoding.should eq(Yaml::Encoding::UTF8)
     end
   end
 end

@@ -16,8 +16,21 @@ module Yaml
 
   class Scanner
     MAX_SIMPLE_KEY_LENGTH = 1024
+    BUFFER_SIZE = 4096
 
-    @reader : Reader
+    # Reader fields (inlined)
+    getter mark : Mark
+    getter encoding : Encoding
+    getter original_encoding : Encoding
+    @buffer : String
+    @pos : Int32
+    @eof : Bool
+    @io : IO?
+    @raw_buffer : Bytes
+    @raw_pos : Int32
+    @raw_len : Int32
+
+    # Scanner fields
     @tokens : Deque(Token)
     @tokens_parsed : Int32
     @token_available : Bool
@@ -30,8 +43,17 @@ module Yaml
     @flow_level : Int32
     @context_stack : Array({String, Mark})
 
-    def initialize(input : String | IO)
-      @reader = Reader.new(input)
+    def initialize(string : String)
+      @mark = Mark.new
+      @encoding = Encoding::UTF8
+      @original_encoding = Encoding::UTF8
+      @buffer = string
+      @pos = 0
+      @eof = true
+      @io = nil
+      @raw_buffer = Bytes.empty
+      @raw_pos = 0
+      @raw_len = 0
       @tokens = Deque(Token).new
       @tokens_parsed = 0
       @token_available = false
@@ -43,6 +65,35 @@ module Yaml
       @simple_keys = [SimpleKey.new]
       @flow_level = 0
       @context_stack = [] of {String, Mark}
+      detect_bom
+      transcode_if_needed
+    end
+
+    def initialize(io : IO)
+      @mark = Mark.new
+      @encoding = Encoding::UTF8
+      @original_encoding = Encoding::UTF8
+      @buffer = ""
+      @pos = 0
+      @eof = false
+      @io = io
+      @raw_buffer = Bytes.new(BUFFER_SIZE)
+      @raw_pos = 0
+      @raw_len = 0
+      @tokens = Deque(Token).new
+      @tokens_parsed = 0
+      @token_available = false
+      @stream_start_produced = false
+      @stream_end_produced = false
+      @indent = -1
+      @indents = [] of Int32
+      @simple_key_allowed = false
+      @simple_keys = [SimpleKey.new]
+      @flow_level = 0
+      @context_stack = [] of {String, Mark}
+      fill_buffer
+      detect_bom
+      transcode_if_needed
     end
 
     def scan : Token
@@ -96,54 +147,57 @@ module Yaml
 
       scan_to_next_token
       stale_simple_keys
-      unroll_indent(@reader.mark.column)
+      unroll_indent(@mark.column)
 
-      return fetch_stream_end if @reader.eof?
+      return fetch_stream_end if eof?
 
-      ch = @reader.peek
-      next_ch = @reader.peek(1)
+      b = peek_byte
+      nb = peek_byte(1)
 
-      case
-      when ch == '%' && @reader.mark.column == 0
-        fetch_directive
-      when ch == '-' && check_document_indicator('-')
-        fetch_document_indicator(TokenKind::DOCUMENT_START)
-      when ch == '.' && check_document_indicator('.')
-        fetch_document_indicator(TokenKind::DOCUMENT_END)
-      when ch == '['
-        fetch_flow_collection_start(TokenKind::FLOW_SEQUENCE_START)
-      when ch == '{'
-        fetch_flow_collection_start(TokenKind::FLOW_MAPPING_START)
-      when ch == ']'
-        fetch_flow_collection_end(TokenKind::FLOW_SEQUENCE_END)
-      when ch == '}'
-        fetch_flow_collection_end(TokenKind::FLOW_MAPPING_END)
-      when ch == ','
-        fetch_flow_entry
-      when ch == '-' && is_blank_or_break_at?(1)
-        fetch_block_entry
-      when ch == '?' && (@flow_level > 0 || is_blank_or_break_at?(1))
-        fetch_key
-      when ch == ':' && (@flow_level > 0 || is_blank_or_break_at?(1))
-        fetch_value
-      when ch == '*'
-        fetch_alias
-      when ch == '&'
-        fetch_anchor
-      when ch == '!'
-        fetch_tag
-      when ch == '|' && @flow_level == 0
-        fetch_block_scalar(literal: true)
-      when ch == '>' && @flow_level == 0
-        fetch_block_scalar(literal: false)
-      when ch == '\''
-        fetch_flow_scalar(single: true)
-      when ch == '"'
-        fetch_flow_scalar(single: false)
-      when is_plain_scalar_start?(ch, next_ch)
+      case b
+      when '%'.ord
+        return fetch_directive if @mark.column == 0
+      when '['.ord then return fetch_flow_collection_start(TokenKind::FLOW_SEQUENCE_START)
+      when '{'.ord then return fetch_flow_collection_start(TokenKind::FLOW_MAPPING_START)
+      when ']'.ord then return fetch_flow_collection_end(TokenKind::FLOW_SEQUENCE_END)
+      when '}'.ord then return fetch_flow_collection_end(TokenKind::FLOW_MAPPING_END)
+      when ','.ord then return fetch_flow_entry
+      when '*'.ord then return fetch_alias
+      when '&'.ord then return fetch_anchor
+      when '!'.ord then return fetch_tag
+      when '\''.ord then return fetch_flow_scalar(single: true)
+      when '"'.ord then return fetch_flow_scalar(single: false)
+      when '-'.ord
+        if check_document_indicator('-')
+          return fetch_document_indicator(TokenKind::DOCUMENT_START)
+        elsif is_blank_or_break_at?(1)
+          return fetch_block_entry
+        end
+      when '.'.ord
+        if check_document_indicator('.')
+          return fetch_document_indicator(TokenKind::DOCUMENT_END)
+        end
+      when '?'.ord
+        if @flow_level > 0 || is_blank_or_break_at?(1)
+          return fetch_key
+        end
+      when ':'.ord
+        if @flow_level > 0 || is_blank_or_break_at?(1)
+          return fetch_value
+        end
+      when '|'.ord
+        return fetch_block_scalar(literal: true) if @flow_level == 0
+      when '>'.ord
+        return fetch_block_scalar(literal: false) if @flow_level == 0
+      end
+
+      # Fall through: try plain scalar or error
+      ch = b < 0x80 ? b.unsafe_chr : peek
+      next_ch = nb < 0x80 ? nb.unsafe_chr : peek(1)
+      if is_plain_scalar_start?(ch, next_ch)
         fetch_plain_scalar
       else
-        scanner_error("found character that cannot start any token", @reader.mark)
+        scanner_error("found character that cannot start any token", @mark)
       end
     end
 
@@ -152,12 +206,12 @@ module Yaml
     private def fetch_stream_start : Nil
       @stream_start_produced = true
       @simple_key_allowed = true
-      mark = @reader.mark
+      mark = @mark
       token = Token.new(
         kind: TokenKind::STREAM_START,
         start_mark: mark,
         end_mark: mark,
-        encoding: @reader.encoding
+        encoding: @encoding
       )
       @tokens.push(token)
     end
@@ -167,7 +221,7 @@ module Yaml
       remove_simple_key
       @simple_key_allowed = false
       @stream_end_produced = true
-      mark = @reader.mark
+      mark = @mark
       @tokens.push(Token.new(
         kind: TokenKind::STREAM_END,
         start_mark: mark,
@@ -185,9 +239,9 @@ module Yaml
     end
 
     private def scan_directive : Nil
-      start_mark = @reader.mark
+      start_mark = @mark
       push_context("directive", start_mark)
-      @reader.advance # skip '%'
+      advance # skip '%'
 
       name = scan_directive_name(start_mark)
 
@@ -198,7 +252,7 @@ module Yaml
         @tokens.push(Token.new(
           kind: TokenKind::VERSION_DIRECTIVE,
           start_mark: start_mark,
-          end_mark: @reader.mark,
+          end_mark: @mark,
           major: major,
           minor: minor
         ))
@@ -208,14 +262,14 @@ module Yaml
         @tokens.push(Token.new(
           kind: TokenKind::TAG_DIRECTIVE,
           start_mark: start_mark,
-          end_mark: @reader.mark,
+          end_mark: @mark,
           value: handle,
           suffix: prefix
         ))
       else
         # Unknown directive — skip to end of line
-        while !@reader.eof? && !is_break?(@reader.peek)
-          @reader.advance
+        while !eof? && !is_break?(peek)
+          advance
         end
         scan_directive_trailing(start_mark)
       end
@@ -223,16 +277,21 @@ module Yaml
     end
 
     private def scan_directive_name(start_mark : Mark) : String
-      value = String.build do |io|
-        while is_alpha?(@reader.peek)
-          io << @reader.peek
-          @reader.advance
-        end
+      # Fast path: directive names are ASCII alphanumeric + '-' + '_'
+      name_start = @pos
+      length = 0
+      loop do
+        b = peek_byte(length)
+        break unless (b >= 'a'.ord && b <= 'z'.ord) || (b >= 'A'.ord && b <= 'Z'.ord) ||
+                     (b >= '0'.ord && b <= '9'.ord) || b == '-'.ord || b == '_'.ord
+        length += 1
       end
+      advance(length) if length > 0
+      value = length > 0 ? @buffer.byte_slice(name_start, @pos - name_start) : ""
       if value.empty?
         scanner_error("while scanning a directive, did not find expected directive name", start_mark)
       end
-      unless @reader.eof? || is_blank_or_break?(@reader.peek)
+      unless eof? || is_blank_or_break?(peek)
         scanner_error("while scanning a directive, found unexpected non-alphabetical character", start_mark)
       end
       value
@@ -241,10 +300,10 @@ module Yaml
     private def scan_version_directive_value(start_mark : Mark) : {Int32, Int32}
       skip_blanks
       major = scan_version_directive_number(start_mark)
-      unless @reader.peek == '.'
+      unless peek == '.'
         scanner_error("while scanning a %YAML directive, did not find expected digit or '.'", start_mark)
       end
-      @reader.advance # skip '.'
+      advance # skip '.'
       minor = scan_version_directive_number(start_mark)
       {major, minor}
     end
@@ -252,9 +311,9 @@ module Yaml
     private def scan_version_directive_number(start_mark : Mark) : Int32
       value = 0
       count = 0
-      while @reader.peek.ascii_number?
-        value = value * 10 + (@reader.peek.ord - '0'.ord)
-        @reader.advance
+      while peek.ascii_number?
+        value = value * 10 + (peek.ord - '0'.ord)
+        advance
         count += 1
       end
       if count == 0
@@ -273,12 +332,12 @@ module Yaml
 
     private def scan_directive_trailing(start_mark : Mark) : Nil
       skip_blanks
-      if @reader.peek == '#'
-        while !@reader.eof? && !is_break?(@reader.peek)
-          @reader.advance
+      if peek == '#'
+        while !eof? && !is_break?(peek)
+          advance
         end
       end
-      unless @reader.eof? || is_break?(@reader.peek)
+      unless eof? || is_break?(peek)
         scanner_error("while scanning a directive, did not find expected comment or line break", start_mark)
       end
       skip_line
@@ -287,21 +346,21 @@ module Yaml
     # --- Document indicators ---
 
     private def check_document_indicator(ch : Char) : Bool
-      return false unless @reader.mark.column == 0
-      @reader.peek == ch && @reader.peek(1) == ch && @reader.peek(2) == ch &&
-        (@reader.eof? || is_blank_or_break_at?(3))
+      return false unless @mark.column == 0
+      peek == ch && peek(1) == ch && peek(2) == ch &&
+        (eof? || is_blank_or_break_at?(3))
     end
 
     private def fetch_document_indicator(kind : TokenKind) : Nil
       unroll_indent(-1)
       remove_simple_key
       @simple_key_allowed = false
-      start_mark = @reader.mark
-      @reader.advance(3)
+      start_mark = @mark
+      advance(3)
       @tokens.push(Token.new(
         kind: kind,
         start_mark: start_mark,
-        end_mark: @reader.mark
+        end_mark: @mark
       ))
     end
 
@@ -311,12 +370,12 @@ module Yaml
       save_simple_key
       increase_flow_level
       @simple_key_allowed = true
-      start_mark = @reader.mark
-      @reader.advance
+      start_mark = @mark
+      advance
       @tokens.push(Token.new(
         kind: kind,
         start_mark: start_mark,
-        end_mark: @reader.mark
+        end_mark: @mark
       ))
     end
 
@@ -324,12 +383,12 @@ module Yaml
       remove_simple_key
       decrease_flow_level
       @simple_key_allowed = false
-      start_mark = @reader.mark
-      @reader.advance
+      start_mark = @mark
+      advance
       @tokens.push(Token.new(
         kind: kind,
         start_mark: start_mark,
-        end_mark: @reader.mark
+        end_mark: @mark
       ))
     end
 
@@ -338,12 +397,12 @@ module Yaml
     private def fetch_flow_entry : Nil
       remove_simple_key
       @simple_key_allowed = true
-      start_mark = @reader.mark
-      @reader.advance
+      start_mark = @mark
+      advance
       @tokens.push(Token.new(
         kind: TokenKind::FLOW_ENTRY,
         start_mark: start_mark,
-        end_mark: @reader.mark
+        end_mark: @mark
       ))
     end
 
@@ -352,18 +411,18 @@ module Yaml
     private def fetch_block_entry : Nil
       if @flow_level == 0
         unless @simple_key_allowed
-          scanner_error("block sequence entries are not allowed in this context", @reader.mark)
+          scanner_error("block sequence entries are not allowed in this context", @mark)
         end
-        roll_indent(@reader.mark.column, TokenKind::BLOCK_SEQUENCE_START, @reader.mark)
+        roll_indent(@mark.column, TokenKind::BLOCK_SEQUENCE_START, @mark)
       end
       @simple_key_allowed = true
       remove_simple_key
-      start_mark = @reader.mark
-      @reader.advance
+      start_mark = @mark
+      advance
       @tokens.push(Token.new(
         kind: TokenKind::BLOCK_ENTRY,
         start_mark: start_mark,
-        end_mark: @reader.mark
+        end_mark: @mark
       ))
     end
 
@@ -372,18 +431,18 @@ module Yaml
     private def fetch_key : Nil
       if @flow_level == 0
         unless @simple_key_allowed
-          scanner_error("mapping keys are not allowed in this context", @reader.mark)
+          scanner_error("mapping keys are not allowed in this context", @mark)
         end
-        roll_indent(@reader.mark.column, TokenKind::BLOCK_MAPPING_START, @reader.mark)
+        roll_indent(@mark.column, TokenKind::BLOCK_MAPPING_START, @mark)
       end
       @simple_key_allowed = true
       remove_simple_key
-      start_mark = @reader.mark
-      @reader.advance
+      start_mark = @mark
+      advance
       @tokens.push(Token.new(
         kind: TokenKind::KEY,
         start_mark: start_mark,
-        end_mark: @reader.mark
+        end_mark: @mark
       ))
     end
 
@@ -414,19 +473,19 @@ module Yaml
         # No simple key — we must be in block context for an explicit value
         if @flow_level == 0
           unless @simple_key_allowed
-            scanner_error("mapping values are not allowed in this context", @reader.mark)
+            scanner_error("mapping values are not allowed in this context", @mark)
           end
-          roll_indent(@reader.mark.column, TokenKind::BLOCK_MAPPING_START, @reader.mark)
+          roll_indent(@mark.column, TokenKind::BLOCK_MAPPING_START, @mark)
         end
         @simple_key_allowed = @flow_level == 0
       end
 
-      start_mark = @reader.mark
-      @reader.advance
+      start_mark = @mark
+      advance
       @tokens.push(Token.new(
         kind: TokenKind::VALUE,
         start_mark: start_mark,
-        end_mark: @reader.mark
+        end_mark: @mark
       ))
     end
 
@@ -445,15 +504,24 @@ module Yaml
     end
 
     private def scan_anchor_or_alias(kind : TokenKind) : Nil
-      start_mark = @reader.mark
+      start_mark = @mark
       push_context(kind == TokenKind::ALIAS ? "alias" : "anchor", start_mark)
-      @reader.advance # skip '*' or '&'
+      advance # skip '*' or '&'
 
-      value = String.build do |io|
-        while is_anchor_char?(@reader.peek)
-          io << @reader.peek
-          @reader.advance
-        end
+      # Fast path: anchor/alias chars are ASCII alphanumeric + '-' + '_'
+      name_start = @pos
+      length = 0
+      loop do
+        b = peek_byte(length)
+        break unless (b >= 'a'.ord && b <= 'z'.ord) || (b >= 'A'.ord && b <= 'Z'.ord) ||
+                     (b >= '0'.ord && b <= '9'.ord) || b == '-'.ord || b == '_'.ord
+        length += 1
+      end
+      if length > 0
+        advance(length)
+        value = @buffer.byte_slice(name_start, @pos - name_start)
+      else
+        value = ""
       end
 
       if value.empty?
@@ -461,8 +529,8 @@ module Yaml
         scanner_error("while scanning an #{context}, did not find expected alphabetic or numeric character", start_mark)
       end
 
-      unless @reader.eof? || is_blank_or_break?(@reader.peek) ||
-             @reader.peek.in?(',', '[', ']', '{', '}', '?', ':', '%', '@', '`')
+      unless eof? || is_blank_or_break?(peek) ||
+             peek.in?(',', '[', ']', '{', '}', '?', ':', '%', '@', '`')
         context = kind == TokenKind::ALIAS ? "alias" : "anchor"
         scanner_error("while scanning an #{context}, found unexpected character", start_mark)
       end
@@ -471,7 +539,7 @@ module Yaml
       @tokens.push(Token.new(
         kind: kind,
         start_mark: start_mark,
-        end_mark: @reader.mark,
+        end_mark: @mark,
         value: value
       ))
     end
@@ -485,43 +553,43 @@ module Yaml
     end
 
     private def scan_tag : Nil
-      start_mark = @reader.mark
+      start_mark = @mark
       push_context("tag", start_mark)
-      @reader.advance # skip first '!'
+      advance # skip first '!'
 
       handle : String
       suffix : String
-      ch = @reader.peek
+      ch = peek
 
       if ch == '<'
         # Verbatim tag: !<uri>
-        @reader.advance # skip '<'
+        advance # skip '<'
         handle = ""
         suffix = scan_tag_uri(directive: false, start_mark: start_mark)
-        unless @reader.peek == '>'
+        unless peek == '>'
           scanner_error("while scanning a tag, did not find the expected '>'", start_mark)
         end
-        @reader.advance # skip '>'
+        advance # skip '>'
       elsif ch == '!'
         # Secondary tag handle: !!suffix
-        @reader.advance # skip second '!'
+        advance # skip second '!'
         handle = "!!"
         suffix = scan_tag_uri(directive: false, start_mark: start_mark, allow_empty: true)
-      elsif is_blank_or_break?(ch) || @reader.eof?
+      elsif is_blank_or_break?(ch) || eof?
         # Primary tag: just !
         handle = "!"
         suffix = ""
       elsif is_alpha?(ch)
         # Could be !handle!suffix or !suffix
         first_part = String.build do |io|
-          while is_alpha?(@reader.peek)
-            io << @reader.peek
-            @reader.advance
+          while is_alpha?(peek)
+            io << peek
+            advance
           end
         end
-        if @reader.peek == '!'
+        if peek == '!'
           # Named tag handle: !handle!suffix
-          @reader.advance # skip trailing '!'
+          advance # skip trailing '!'
           handle = String.build(first_part.bytesize + 2) { |io| io << '!' << first_part << '!' }
           suffix = scan_tag_uri(directive: false, start_mark: start_mark)
         else
@@ -535,7 +603,7 @@ module Yaml
         suffix = scan_tag_uri(directive: false, start_mark: start_mark)
       end
 
-      unless @reader.eof? || is_blank_or_break?(@reader.peek) || (@flow_level > 0 && @reader.peek == ',')
+      unless eof? || is_blank_or_break?(peek) || (@flow_level > 0 && peek == ',')
         scanner_error("while scanning a tag, did not find expected whitespace or line break", start_mark)
       end
 
@@ -543,14 +611,14 @@ module Yaml
       @tokens.push(Token.new(
         kind: TokenKind::TAG,
         start_mark: start_mark,
-        end_mark: @reader.mark,
+        end_mark: @mark,
         value: handle,
         suffix: suffix
       ))
     end
 
     private def scan_tag_handle(directive : Bool, start_mark : Mark) : String
-      ch = @reader.peek
+      ch = peek
       unless ch == '!'
         context = directive ? "while scanning a %TAG directive" : "while scanning a tag"
         scanner_error("#{context}, did not find expected '!'", start_mark)
@@ -558,21 +626,21 @@ module Yaml
 
       value = String.build do |io|
         io << '!'
-        @reader.advance
+        advance
 
-        if is_alpha?(@reader.peek)
-          while is_alpha?(@reader.peek)
-            io << @reader.peek
-            @reader.advance
+        if is_alpha?(peek)
+          while is_alpha?(peek)
+            io << peek
+            advance
           end
-          unless @reader.peek == '!'
+          unless peek == '!'
             if directive
               scanner_error("while scanning a %TAG directive, did not find expected '!'", start_mark)
             end
             # For non-directive tags, return what we have
           else
             io << '!'
-            @reader.advance
+            advance
           end
         end
       end
@@ -582,12 +650,12 @@ module Yaml
     private def scan_tag_uri(directive : Bool, start_mark : Mark, allow_empty : Bool = false) : String
       value = String.build do |io|
         loop do
-          while is_uri_char?(@reader.peek)
-            if @reader.peek == '%'
+          while is_uri_char?(peek)
+            if peek == '%'
               io << scan_uri_escapes(start_mark)
             else
-              io << @reader.peek
-              @reader.advance
+              io << peek
+              advance
             end
           end
           break
@@ -603,12 +671,12 @@ module Yaml
     private def scan_uri_escapes(start_mark : Mark) : String
       bytes = [] of UInt8
       loop do
-        break unless @reader.peek == '%'
-        @reader.advance # skip '%'
-        high = @reader.peek
-        @reader.advance
-        low = @reader.peek
-        @reader.advance
+        break unless peek == '%'
+        advance # skip '%'
+        high = peek
+        advance
+        low = peek
+        advance
         unless high.hex? && low.hex?
           scanner_error("while scanning a tag, found invalid URI escape", start_mark)
         end
@@ -626,9 +694,9 @@ module Yaml
     end
 
     private def scan_block_scalar(literal : Bool) : Nil
-      start_mark = @reader.mark
+      start_mark = @mark
       push_context(literal ? "literal block scalar" : "folded block scalar", start_mark)
-      @reader.advance # skip '|' or '>'
+      advance # skip '|' or '>'
 
       # Scan the header: chomping and indent indicator
       chomping = 0  # 0=clip, 1=strip, -1=keep
@@ -637,46 +705,46 @@ module Yaml
       leading_break = ""
 
       # Chomping indicator
-      ch = @reader.peek
+      ch = peek
       if ch == '+' || ch == '-'
         chomping = ch == '+' ? -1 : 1
-        @reader.advance
-        ch = @reader.peek
+        advance
+        ch = peek
         if ch.ascii_number?
           increment = ch.ord - '0'.ord
           if increment == 0
             scanner_error("while scanning a block scalar, found an indentation indicator equal to 0", start_mark)
           end
-          @reader.advance
+          advance
         end
       elsif ch.ascii_number?
         increment = ch.ord - '0'.ord
         if increment == 0
           scanner_error("while scanning a block scalar, found an indentation indicator equal to 0", start_mark)
         end
-        @reader.advance
-        ch = @reader.peek
+        advance
+        ch = peek
         if ch == '+' || ch == '-'
           chomping = ch == '+' ? -1 : 1
-          @reader.advance
+          advance
         end
       end
 
       # Eat trailing blanks and comment
       skip_blanks
-      if @reader.peek == '#'
-        while !@reader.eof? && !is_break?(@reader.peek)
-          @reader.advance
+      if peek == '#'
+        while !eof? && !is_break?(peek)
+          advance
         end
       end
 
-      unless @reader.eof? || is_break?(@reader.peek)
+      unless eof? || is_break?(peek)
         scanner_error("while scanning a block scalar, did not find expected comment or line break", start_mark)
       end
 
       skip_line
 
-      end_mark = @reader.mark
+      end_mark = @mark
       indent = if increment > 0
                  @indent >= 0 ? @indent + increment : increment
                else
@@ -693,13 +761,13 @@ module Yaml
         if indent == 0
           # Auto-detect: skip blank lines, find first non-blank line's indent
           loop do
-            while !@reader.eof? && @reader.mark.column < 1024 && @reader.peek == ' '
-              @reader.advance
+            while !eof? && @mark.column < 1024 && peek == ' '
+              advance
             end
-            if @reader.mark.column > max_indent
-              max_indent = @reader.mark.column
+            if @mark.column > max_indent
+              max_indent = @mark.column
             end
-            if is_break?(@reader.peek) && !@reader.eof?
+            if is_break?(peek) && !eof?
               breaks << scan_line_break
             else
               break
@@ -714,8 +782,8 @@ module Yaml
         first = true
         loop do
           # Read content at current indentation
-          if @reader.mark.column == indent && !@reader.eof?
-            trailing_blank = is_blank?(@reader.peek)
+          if @mark.column == indent && !eof?
+            trailing_blank = is_blank?(peek)
 
             if !literal && !first && !leading_blank && !trailing_blank &&
                breaks.to_s.count('\n') <= 1 && io.bytesize > 0
@@ -725,16 +793,16 @@ module Yaml
               io << breaks.to_s
             end
             breaks = String::Builder.new
-            leading_blank = is_blank?(@reader.peek)
+            leading_blank = is_blank?(peek)
 
-            while !@reader.eof? && !is_break?(@reader.peek)
-              io << @reader.peek
-              @reader.advance
+            while !eof? && !is_break?(peek)
+              io << peek
+              advance
             end
             first = false
-            end_mark = @reader.mark
+            end_mark = @mark
             # Capture the line break (will be processed in next iteration)
-            if !@reader.eof? && is_break?(@reader.peek)
+            if !eof? && is_break?(peek)
               breaks << scan_line_break
             end
           else
@@ -744,11 +812,11 @@ module Yaml
           # Eat blank lines (breaks)
           loop do
             # Eat indentation up to the block's indent level
-            while !@reader.eof? && @reader.mark.column < indent && @reader.peek == ' '
-              @reader.advance
+            while !eof? && @mark.column < indent && peek == ' '
+              advance
             end
 
-            if is_break?(@reader.peek) && !@reader.eof?
+            if is_break?(peek) && !eof?
               breaks << scan_line_break
             else
               break
@@ -787,27 +855,27 @@ module Yaml
     end
 
     private def scan_flow_scalar(single : Bool) : Nil
-      start_mark = @reader.mark
+      start_mark = @mark
       push_context(single ? "single-quoted scalar" : "double-quoted scalar", start_mark)
-      @reader.advance # skip quote
+      advance # skip quote
 
       value = String.build do |io|
         loop do
           # Check for end of scalar or EOF
-          if @reader.eof?
+          if eof?
             scanner_error("while scanning a quoted scalar, found unexpected end of stream", start_mark)
           end
 
           if single
             # Single-quoted scalar
-            if @reader.peek == '\''
-              if @reader.peek(1) == '\''
+            if peek == '\''
+              if peek(1) == '\''
                 io << '\''
-                @reader.advance(2)
+                advance(2)
               else
                 break
               end
-            elsif is_break?(@reader.peek)
+            elsif is_break?(peek)
               # Line break — fold to space
               whitespaces = scan_flow_scalar_breaks(start_mark)
               if whitespaces.empty?
@@ -816,17 +884,17 @@ module Yaml
                 io << whitespaces
               end
             else
-              io << @reader.peek
-              @reader.advance
+              io << peek
+              advance
             end
           else
             # Double-quoted scalar
-            if @reader.peek == '"'
+            if peek == '"'
               break
-            elsif @reader.peek == '\\'
-              @reader.advance
-              ch = @reader.peek
-              @reader.advance
+            elsif peek == '\\'
+              advance
+              ch = peek
+              advance
               case ch
               when '0'  then io << '\0'
               when 'a'  then io << '\a'
@@ -864,7 +932,7 @@ module Yaml
                   scanner_error("while scanning a double-quoted scalar, found unknown escape character '#{ch}'", start_mark)
                 end
               end
-            elsif is_break?(@reader.peek)
+            elsif is_break?(peek)
               whitespaces = scan_flow_scalar_breaks(start_mark)
               if whitespaces.empty?
                 io << ' '
@@ -872,19 +940,19 @@ module Yaml
                 io << whitespaces
               end
             else
-              io << @reader.peek
-              @reader.advance
+              io << peek
+              advance
             end
           end
         end
       end
 
-      @reader.advance # skip closing quote
+      advance # skip closing quote
       pop_context
       @tokens.push(Token.new(
         kind: TokenKind::SCALAR,
         start_mark: start_mark,
-        end_mark: @reader.mark,
+        end_mark: @mark,
         value: value,
         style: single ? ScalarStyle::SINGLE_QUOTED : ScalarStyle::DOUBLE_QUOTED
       ))
@@ -893,12 +961,12 @@ module Yaml
     private def scan_hex_escape(length : Int32, start_mark : Mark) : Char
       code = 0
       length.times do
-        ch = @reader.peek
+        ch = peek
         unless ch.hex?
           scanner_error("while scanning a double-quoted scalar, did not find expected hex digit", start_mark)
         end
         code = code * 16 + ch.to_i(16)
-        @reader.advance
+        advance
       end
       code.chr
     end
@@ -908,10 +976,10 @@ module Yaml
       breaks = String.build do |io|
         # First, skip leading blanks
         loop do
-          while is_blank?(@reader.peek)
-            @reader.advance
+          while is_blank?(peek)
+            advance
           end
-          if is_break?(@reader.peek)
+          if is_break?(peek)
             lb = scan_line_break
             io << lb
           else
@@ -932,6 +1000,67 @@ module Yaml
 
     # --- Plain scalar ---
 
+    private def try_fast_plain_scalar : String?
+      # Fast path: scan a single-line plain scalar entirely via byte ops.
+      # Only works for string input (no IO compaction issues) and single-line content.
+      return nil if @io
+
+      length = 0
+      last_content = 0 # byte offset of last non-space char + 1
+
+      loop do
+        byte_pos = @pos + length
+        break if byte_pos >= @buffer.bytesize
+        b = @buffer.to_unsafe[byte_pos]
+        # End on break or EOF
+        break if b == '\n'.ord || b == '\r'.ord
+        # Tab ends a plain scalar value
+        break if b == '\t'.ord
+        # Flow indicators in flow context
+        if @flow_level > 0
+          break if b == ','.ord || b == '['.ord || b == ']'.ord || b == '{'.ord || b == '}'.ord
+        end
+        # Comment preceded by blank
+        if b == '#'.ord && length > 0
+          pb = @buffer.to_unsafe[@pos + length - 1]
+          break if pb == ' '.ord || pb == '\t'.ord
+        end
+        # Key separator: ':' followed by blank/break/eof or flow indicator
+        if b == ':'.ord
+          next_pos = @pos + length + 1
+          nb = next_pos < @buffer.bytesize ? @buffer.to_unsafe[next_pos] : 0_u8
+          break if nb == 0 || nb == ' '.ord || nb == '\t'.ord || nb == '\n'.ord || nb == '\r'.ord
+          if @flow_level > 0
+            break if nb == ','.ord || nb == '['.ord || nb == ']'.ord || nb == '{'.ord || nb == '}'.ord
+          end
+        end
+        # Non-ASCII byte — bail entirely to slow path
+        return nil if b >= 0x80
+        length += 1
+        last_content = length unless b == ' '.ord
+      end
+
+      # Trim trailing spaces
+      length = last_content
+      return nil if length == 0
+
+      # Only use fast path if what follows is NOT a line break (could be multi-line)
+      check_pos = @pos + last_content
+      while check_pos < @buffer.bytesize && @buffer.to_unsafe[check_pos] == ' '.ord
+        check_pos += 1
+      end
+      if check_pos < @buffer.bytesize
+        after = @buffer.to_unsafe[check_pos]
+        return nil if after == '\n'.ord || after == '\r'.ord
+      end
+
+      # Single-line scalar — extract directly from buffer
+      @simple_key_allowed = false
+      value = @buffer.byte_slice(@pos, length)
+      advance(length)
+      value
+    end
+
     private def fetch_plain_scalar : Nil
       save_simple_key
       @simple_key_allowed = false
@@ -939,8 +1068,23 @@ module Yaml
     end
 
     private def scan_plain_scalar : Nil
-      start_mark = @reader.mark
+      start_mark = @mark
       push_context("plain scalar", start_mark)
+
+      # Fast path: single-line plain scalar for string input
+      fast = try_fast_plain_scalar
+      if fast
+        pop_context
+        @tokens.push(Token.new(
+          kind: TokenKind::SCALAR,
+          start_mark: start_mark,
+          end_mark: @mark,
+          value: fast,
+          style: ScalarStyle::PLAIN
+        ))
+        return
+      end
+
       end_mark = start_mark
       indent = @indent + 1
 
@@ -950,20 +1094,20 @@ module Yaml
 
         loop do
           # Check for end conditions
-          break if @reader.peek == '#' && is_blank_at?(-1)
-          break if @reader.eof?
+          break if peek == '#' && is_blank_at?(-1)
+          break if eof?
 
           # Check for document indicators at column 0
-          if @reader.mark.column == 0
-            if (@reader.peek == '-' && @reader.peek(1) == '-' && @reader.peek(2) == '-' && is_blank_or_break_at?(3)) ||
-               (@reader.peek == '.' && @reader.peek(1) == '.' && @reader.peek(2) == '.' && is_blank_or_break_at?(3))
+          if @mark.column == 0
+            if (peek == '-' && peek(1) == '-' && peek(2) == '-' && is_blank_or_break_at?(3)) ||
+               (peek == '.' && peek(1) == '.' && peek(2) == '.' && is_blank_or_break_at?(3))
               break
             end
           end
 
           length = 0
           loop do
-            ch = @reader.peek(length)
+            ch = peek(length)
             break if is_blank_or_break?(ch) || ch == '\0'
             # In flow context, check for flow indicators
             if @flow_level > 0 && ch.in?(',', '[', ']', '{', '}')
@@ -971,7 +1115,7 @@ module Yaml
             end
             # Check for ': ' or ':' followed by flow indicator
             if ch == ':' && (is_blank_or_break_at?(length + 1) ||
-               (@flow_level > 0 && @reader.peek(length + 1).in?(',', '[', ']', '{', '}')))
+               (@flow_level > 0 && peek(length + 1).in?(',', '[', ']', '{', '}')))
               break
             end
             length += 1
@@ -988,43 +1132,43 @@ module Yaml
           first = false
 
           length.times do
-            io << @reader.peek
-            @reader.advance
+            io << peek
+            advance
           end
 
-          end_mark = @reader.mark
+          end_mark = @mark
 
           # Consume whitespace/breaks after the content
-          break if @reader.eof?
-          break unless is_blank_or_break?(@reader.peek)
+          break if eof?
+          break unless is_blank_or_break?(peek)
 
           # Collect whitespace
           ws_count = 0
           break_count = 0
           trailing_breaks = String::Builder.new
 
-          while is_blank?(@reader.peek)
-            @reader.advance
+          while is_blank?(peek)
+            advance
           end
 
-          if is_break?(@reader.peek)
+          if is_break?(peek)
             lb = scan_line_break
             break_count += 1
             @simple_key_allowed = true
 
             # Skip blank lines
-            while is_break?(@reader.peek)
+            while is_break?(peek)
               trailing_breaks << scan_line_break
               break_count += 1
             end
 
             # Eat leading spaces on the next line to determine indentation
-            while @reader.peek == ' '
-              @reader.advance
+            while peek == ' '
+              advance
             end
 
             # Check indentation — if next content is at or below the base indent, stop
-            if @flow_level == 0 && @reader.mark.column < indent
+            if @flow_level == 0 && @mark.column < indent
               break
             end
 
@@ -1079,7 +1223,7 @@ module Yaml
       return if @flow_level > 0
 
       while @indent > column
-        mark = @reader.mark
+        mark = @mark
         @indent = @indents.pop
         @tokens.push(Token.new(
           kind: TokenKind::BLOCK_END,
@@ -1104,14 +1248,14 @@ module Yaml
     # --- Simple key management ---
 
     private def save_simple_key : Nil
-      required = @flow_level > 0 ? false : (@indent == @reader.mark.column)
+      required = @flow_level > 0 ? false : (@indent == @mark.column)
 
       if @simple_key_allowed
         key = SimpleKey.new(
           possible: true,
           required: required,
           token_number: @tokens_parsed + @tokens.size,
-          mark: @reader.mark
+          mark: @mark
         )
         remove_simple_key
         @simple_keys[-1] = key
@@ -1130,7 +1274,7 @@ module Yaml
       @simple_keys.each_with_index do |key, i|
         if key.possible
           # A simple key is stale if it's on a different line (block context only)
-          if @flow_level == 0 && key.mark.line < @reader.mark.line
+          if @flow_level == 0 && key.mark.line < @mark.line
             if key.required
               scanner_error("while scanning a simple key, could not find expected ':'", key.mark)
             end
@@ -1145,19 +1289,23 @@ module Yaml
     private def scan_to_next_token : Nil
       loop do
         # Skip whitespace (tabs allowed in certain contexts)
-        while @reader.peek == ' ' || ((@flow_level > 0 || !@simple_key_allowed) && @reader.peek == '\t')
-          @reader.advance
+        b = peek_byte
+        while b == ' '.ord || ((@flow_level > 0 || !@simple_key_allowed) && b == '\t'.ord)
+          advance
+          b = peek_byte
         end
 
         # Skip comment
-        if @reader.peek == '#'
-          while !@reader.eof? && !is_break?(@reader.peek)
-            @reader.advance
+        if b == '#'.ord
+          while !eof?
+            b = peek_byte
+            break if b == '\n'.ord || b == '\r'.ord || (b >= 0x80 && is_break?(peek))
+            advance
           end
         end
 
         # Skip line break
-        if is_break?(@reader.peek)
+        if is_break_byte?(peek_byte)
           skip_line
           @simple_key_allowed = true if @flow_level == 0
         else
@@ -1167,15 +1315,15 @@ module Yaml
     end
 
     private def scan_line_break : String
-      ch = @reader.peek
-      if ch == '\r' && @reader.peek(1) == '\n'
-        @reader.advance(2)
+      ch = peek
+      if ch == '\r' && peek(1) == '\n'
+        advance(2)
         "\n"
       elsif ch == '\r' || ch == '\n'
-        @reader.advance
+        advance
         "\n"
       elsif ch == '\u0085' || ch == '\u2028' || ch == '\u2029'
-        @reader.advance
+        advance
         "\n"
       else
         ""
@@ -1183,17 +1331,17 @@ module Yaml
     end
 
     private def skip_line : Nil
-      ch = @reader.peek
-      if ch == '\r' && @reader.peek(1) == '\n'
-        @reader.advance(2)
+      ch = peek
+      if ch == '\r' && peek(1) == '\n'
+        advance(2)
       elsif is_break?(ch)
-        @reader.advance
+        advance
       end
     end
 
     private def skip_blanks : Nil
-      while @reader.peek == ' ' || @reader.peek == '\t'
-        @reader.advance
+      while peek == ' ' || peek == '\t'
+        advance
       end
     end
 
@@ -1203,8 +1351,16 @@ module Yaml
       ch == ' ' || ch == '\t'
     end
 
+    private def is_blank_byte?(b : UInt8) : Bool
+      b == ' '.ord || b == '\t'.ord
+    end
+
     private def is_break?(ch : Char) : Bool
       ch == '\n' || ch == '\r' || ch == '\u0085' || ch == '\u2028' || ch == '\u2029'
+    end
+
+    private def is_break_byte?(b : UInt8) : Bool
+      b == '\n'.ord || b == '\r'.ord
     end
 
     private def is_blank_or_break?(ch : Char) : Bool
@@ -1217,12 +1373,12 @@ module Yaml
         # This is only used for '#' check where we assume whitespace before
         true
       else
-        is_blank?(@reader.peek(offset))
+        is_blank?(peek(offset))
       end
     end
 
     private def is_blank_or_break_at?(offset : Int32) : Bool
-      ch = @reader.peek(offset)
+      ch = peek(offset)
       is_blank_or_break?(ch) || ch == '\0'
     end
 
@@ -1262,9 +1418,250 @@ module Yaml
                      else
                        nil
                      end
-      source_snippet = @reader.get_source_line(mark.line)
+      source_snippet = get_source_line(mark.line)
       raise ParseException.new(message, mark.line + 1, mark.column + 1,
         context_info: context_info, source_snippet: source_snippet)
+    end
+
+    # --- Reader methods (inlined) ---
+
+    def peek(offset : Int32 = 0) : Char
+      byte_pos = @pos
+      # Walk forward offset characters from current byte position
+      offset.times do
+        ensure_available(byte_pos)
+        return '\0' if byte_pos >= @buffer.bytesize
+        byte_pos += char_bytesize_at(byte_pos)
+      end
+      ensure_available(byte_pos)
+      return '\0' if byte_pos >= @buffer.bytesize
+      decode_char_at(byte_pos)
+    end
+
+    def peek_byte(offset : Int32 = 0) : UInt8
+      target = @pos + offset
+      ensure_available(target)
+      if target < @buffer.bytesize
+        @buffer.to_unsafe[target]
+      else
+        0_u8
+      end
+    end
+
+    def prefix(length : Int32) : String
+      # length is in characters
+      String.build(length) do |io|
+        byte_pos = @pos
+        length.times do
+          ensure_available(byte_pos)
+          break if byte_pos >= @buffer.bytesize
+          ch = decode_char_at(byte_pos)
+          io << ch
+          byte_pos += ch.bytesize
+        end
+      end
+    end
+
+    def prefix_bytes(length : Int32) : Bytes
+      ensure_available(@pos + length - 1)
+      available = Math.min(length, @buffer.bytesize - @pos)
+      if available > 0
+        @buffer.to_slice[@pos, available]
+      else
+        Bytes.empty
+      end
+    end
+
+    def advance(n : Int32 = 1) : Nil
+      n.times do
+        break if eof?
+        ch = decode_char_at(@pos)
+        @pos += ch.bytesize
+        @mark.index += ch.bytesize
+        if ch == '\n'
+          @mark.line += 1
+          @mark.column = 0
+        else
+          @mark.column += 1
+        end
+      end
+    end
+
+    def eof? : Bool
+      ensure_available(@pos)
+      @pos >= @buffer.bytesize
+    end
+
+    private def decode_char_at(byte_pos : Int32) : Char
+      return '\0' if byte_pos >= @buffer.bytesize
+      first = @buffer.to_unsafe[byte_pos]
+      if first < 0x80
+        first.unsafe_chr
+      else
+        reader = Char::Reader.new(@buffer)
+        reader.pos = byte_pos
+        reader.current_char
+      end
+    end
+
+    private def char_bytesize_at(byte_pos : Int32) : Int32
+      return 1 if byte_pos >= @buffer.bytesize
+      first = @buffer.to_unsafe[byte_pos]
+      if first < 0x80
+        1
+      elsif first < 0xE0
+        2
+      elsif first < 0xF0
+        3
+      else
+        4
+      end
+    end
+
+    def get_source_line(line : Int32) : String?
+      current_line = 0
+      i = 0
+      while i < @buffer.bytesize
+        if current_line == line
+          end_i = i
+          while end_i < @buffer.bytesize
+            byte = @buffer.to_unsafe[end_i]
+            break if byte === '\n'.ord || byte === '\r'.ord
+            end_i += 1
+          end
+          len = end_i - i
+          return nil if len == 0
+          result = @buffer.byte_slice(i, Math.min(len, 120))
+          return len > 120 ? result + "..." : result
+        end
+        byte = @buffer.to_unsafe[i]
+        if byte === '\n'.ord
+          current_line += 1
+          i += 1
+        elsif byte === '\r'.ord
+          current_line += 1
+          i += 1
+          i += 1 if i < @buffer.bytesize && @buffer.to_unsafe[i] === '\n'.ord
+        else
+          i += 1
+        end
+      end
+      nil
+    end
+
+    private def detect_bom : Nil
+      return if @buffer.bytesize < 2
+
+      bytes = @buffer.to_slice
+      if @buffer.bytesize >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF
+        @encoding = Encoding::UTF8
+        @original_encoding = Encoding::UTF8
+        @pos = 3
+        @mark.index = 3
+      elsif bytes[0] == 0xFE && bytes[1] == 0xFF
+        @encoding = Encoding::UTF16BE
+        @original_encoding = Encoding::UTF16BE
+        @pos = 2
+        @mark.index = 2
+      elsif bytes[0] == 0xFF && bytes[1] == 0xFE
+        @encoding = Encoding::UTF16LE
+        @original_encoding = Encoding::UTF16LE
+        @pos = 2
+        @mark.index = 2
+      end
+    end
+
+    private def transcode_if_needed : Nil
+      return if @encoding == Encoding::UTF8
+
+      big_endian = @encoding == Encoding::UTF16BE
+      raw = @buffer.to_slice[@pos, @buffer.bytesize - @pos]
+      transcoded = transcode_utf16_bytes(raw, big_endian)
+
+      @buffer = transcoded
+      @pos = 0
+      @mark.index = 0
+      @encoding = Encoding::UTF8
+    end
+
+    private def transcode_utf16_bytes(bytes : Bytes, big_endian : Bool) : String
+      String.build do |io|
+        i = 0
+        while i + 1 < bytes.size
+          code_unit = if big_endian
+                        (bytes[i].to_u16 << 8) | bytes[i + 1].to_u16
+                      else
+                        bytes[i].to_u16 | (bytes[i + 1].to_u16 << 8)
+                      end
+          i += 2
+
+          codepoint = if code_unit >= 0xD800_u16 && code_unit <= 0xDBFF_u16
+                        if i + 1 < bytes.size
+                          low = if big_endian
+                                  (bytes[i].to_u16 << 8) | bytes[i + 1].to_u16
+                                else
+                                  bytes[i].to_u16 | (bytes[i + 1].to_u16 << 8)
+                                end
+                          if low >= 0xDC00_u16 && low <= 0xDFFF_u16
+                            i += 2
+                            ((code_unit.to_u32 - 0xD800) << 10) + (low.to_u32 - 0xDC00) + 0x10000
+                          else
+                            0xFFFD_u32
+                          end
+                        else
+                          0xFFFD_u32
+                        end
+                      else
+                        code_unit.to_u32
+                      end
+
+          io << codepoint.chr
+        end
+      end
+    end
+
+    private def ensure_available(target : Int32) : Nil
+      return if @eof
+      while target >= @buffer.size
+        break unless read_more
+      end
+    end
+
+    private def fill_buffer : Nil
+      io = @io
+      return unless io
+
+      bytes_read = io.read(@raw_buffer)
+      if bytes_read == 0
+        @eof = true
+        return
+      end
+      @buffer = String.new(@raw_buffer[0, bytes_read])
+    end
+
+    private def read_more : Bool
+      io = @io
+      return false unless io
+
+      # Compact: keep unread portion
+      if @pos > 0
+        remaining = @buffer.bytesize - @pos
+        if remaining > 0
+          @buffer = @buffer.byte_slice(@pos)
+        else
+          @buffer = ""
+        end
+        @pos = 0
+      end
+
+      bytes_read = io.read(@raw_buffer)
+      if bytes_read == 0
+        @eof = true
+        return false
+      end
+
+      @buffer = @buffer + String.new(@raw_buffer[0, bytes_read])
+      true
     end
   end
 end
