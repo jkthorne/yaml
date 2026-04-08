@@ -376,7 +376,7 @@ module Yaml
         end
         roll_indent(@reader.mark.column, TokenKind::BLOCK_MAPPING_START, @reader.mark)
       end
-      @simple_key_allowed = @flow_level > 0 ? true : true  # allowed after explicit key in both contexts
+      @simple_key_allowed = true
       remove_simple_key
       start_mark = @reader.mark
       @reader.advance
@@ -522,7 +522,7 @@ module Yaml
         if @reader.peek == '!'
           # Named tag handle: !handle!suffix
           @reader.advance # skip trailing '!'
-          handle = "!" + first_part + "!"
+          handle = String.build(first_part.bytesize + 2) { |io| io << '!' << first_part << '!' }
           suffix = scan_tag_uri(directive: false, start_mark: start_mark)
         else
           # Primary tag shorthand: !suffix (first_part is part of the suffix)
@@ -1242,12 +1242,6 @@ module Yaml
     private def is_plain_scalar_start?(ch : Char, next_ch : Char) : Bool
       return false if is_blank_or_break?(ch) || ch == '\0'
       return false if ch.in?('-', '?', ':', ',', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`')
-
-      # '-', '?', ':' can start a plain scalar if followed by non-blank
-      if ch == '-' || ch == '?' || ch == ':'
-        return !is_blank_or_break?(next_ch)
-      end
-
       true
     end
 
