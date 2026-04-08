@@ -60,11 +60,11 @@ module YAML
       @stream_start_produced = false
       @stream_end_produced = false
       @indent = -1
-      @indents = [] of Int32
+      @indents = Array(Int32).new(8)
       @simple_key_allowed = false
       @simple_keys = [SimpleKey.new]
       @flow_level = 0
-      @context_stack = [] of {String, Mark}
+      @context_stack = Array({String, Mark}).new(4)
       detect_bom
       transcode_if_needed
     end
@@ -86,11 +86,11 @@ module YAML
       @stream_start_produced = false
       @stream_end_produced = false
       @indent = -1
-      @indents = [] of Int32
+      @indents = Array(Int32).new(8)
       @simple_key_allowed = false
       @simple_keys = [SimpleKey.new]
       @flow_level = 0
-      @context_stack = [] of {String, Mark}
+      @context_stack = Array({String, Mark}).new(4)
       fill_buffer
       detect_bom
       transcode_if_needed
@@ -680,7 +680,7 @@ module YAML
         unless high.hex? && low.hex?
           scanner_error("while scanning a tag, found invalid URI escape", start_mark)
         end
-        bytes << "#{high}#{low}".to_u8(16)
+        bytes << ((high.to_i(16) << 4) | low.to_i(16)).to_u8
       end
       String.new(Bytes.new(bytes.to_unsafe, bytes.size))
     end
@@ -754,6 +754,7 @@ module YAML
       # Scan the block scalar content
       value = String.build do |io|
         breaks = String::Builder.new
+        break_count = 0
         leading_blank = false
         max_indent = 0
 
@@ -769,6 +770,7 @@ module YAML
             end
             if is_break?(peek) && !eof?
               breaks << scan_line_break
+              break_count += 1
             else
               break
             end
@@ -786,13 +788,14 @@ module YAML
             trailing_blank = is_blank?(peek)
 
             if !literal && !first && !leading_blank && !trailing_blank &&
-               breaks.to_s.count('\n') <= 1 && io.bytesize > 0
+               break_count <= 1 && io.bytesize > 0
               # Fold: single break between non-blank lines becomes space
               io << ' '
             else
               io << breaks.to_s
             end
             breaks = String::Builder.new
+            break_count = 0
             leading_blank = is_blank?(peek)
 
             while !eof? && !is_break?(peek)
@@ -804,6 +807,7 @@ module YAML
             # Capture the line break (will be processed in next iteration)
             if !eof? && is_break?(peek)
               breaks << scan_line_break
+              break_count += 1
             end
           else
             break
@@ -818,6 +822,7 @@ module YAML
 
             if is_break?(peek) && !eof?
               breaks << scan_line_break
+              break_count += 1
             else
               break
             end
@@ -876,12 +881,10 @@ module YAML
                 break
               end
             elsif is_break?(peek)
-              # Line break — fold to space
-              whitespaces = scan_flow_scalar_breaks(start_mark)
-              if whitespaces.empty?
+              # Line break — fold to space or preserve multiple breaks
+              break_count = scan_flow_scalar_breaks(io, start_mark)
+              if break_count <= 1
                 io << ' '
-              else
-                io << whitespaces
               end
             else
               io << peek
@@ -921,23 +924,16 @@ module YAML
                 io << scan_hex_escape(8, start_mark)
               else
                 if is_break?(ch)
-                  # Escaped line break
-                  whitespaces = scan_flow_scalar_breaks(start_mark)
-                  if whitespaces.empty?
-                    # Just skip the line break
-                  else
-                    io << whitespaces
-                  end
+                  # Escaped line break — skip first break, preserve extras
+                  scan_flow_scalar_breaks(io, start_mark)
                 else
                   scanner_error("while scanning a double-quoted scalar, found unknown escape character '#{ch}'", start_mark)
                 end
               end
             elsif is_break?(peek)
-              whitespaces = scan_flow_scalar_breaks(start_mark)
-              if whitespaces.empty?
+              break_count = scan_flow_scalar_breaks(io, start_mark)
+              if break_count <= 1
                 io << ' '
-              else
-                io << whitespaces
               end
             else
               io << peek
@@ -971,31 +967,26 @@ module YAML
       code.chr
     end
 
-    private def scan_flow_scalar_breaks(start_mark : Mark) : String
-      # Skip whitespace and line breaks, collecting extra line breaks
-      breaks = String.build do |io|
-        # First, skip leading blanks
-        loop do
-          while is_blank?(peek)
-            advance
-          end
-          if is_break?(peek)
-            lb = scan_line_break
-            io << lb
-          else
-            break
-          end
+    # Skip whitespace and line breaks in flow scalars. If 2+ breaks found,
+    # writes the trailing breaks (all but first) to io. Returns break count.
+    private def scan_flow_scalar_breaks(io : IO, start_mark : Mark) : Int32
+      count = 0
+      loop do
+        while is_blank?(peek)
+          advance
+        end
+        if is_break?(peek)
+          scan_line_break
+          count += 1
+        else
+          break
         end
       end
-      # If we got 0 or 1 line breaks, return empty (the caller adds a space for single break)
-      # If we got 2+ line breaks, return all but the first (which becomes the space/fold)
-      count = breaks.count('\n') + breaks.count('\r')
-      if count <= 1
-        ""
-      else
-        # Return the extra breaks beyond the first
-        breaks[1..]? || ""
+      # Write trailing breaks beyond the first (which becomes fold/space)
+      if count >= 2
+        (count - 1).times { io << '\n' }
       end
+      count
     end
 
     # --- Plain scalar ---
@@ -1089,7 +1080,8 @@ module YAML
       indent = @indent + 1
 
       value = String.build do |io|
-        spaces = String::Builder.new
+        pending_space = 0_u8 # 0=none, 1=space, 2=newline, 3=trailing breaks
+        trailing_break_count = 0
         first = true
 
         loop do
@@ -1106,18 +1098,27 @@ module YAML
           end
 
           length = 0
+          scan_byte_pos = @pos
           loop do
-            ch = peek(length)
+            ensure_available(scan_byte_pos)
+            break if scan_byte_pos >= @buffer.bytesize
+            ch = decode_char_at(scan_byte_pos)
             break if is_blank_or_break?(ch) || ch == '\0'
             # In flow context, check for flow indicators
             if @flow_level > 0 && ch.in?(',', '[', ']', '{', '}')
               break
             end
             # Check for ': ' or ':' followed by flow indicator
-            if ch == ':' && (is_blank_or_break_at?(length + 1) ||
-               (@flow_level > 0 && peek(length + 1).in?(',', '[', ']', '{', '}')))
-              break
+            if ch == ':'
+              next_byte_pos = scan_byte_pos + ch.bytesize
+              ensure_available(next_byte_pos)
+              next_ch = decode_char_at(next_byte_pos)
+              if is_blank_or_break?(next_ch) || next_ch == '\0' ||
+                 (@flow_level > 0 && next_ch.in?(',', '[', ']', '{', '}'))
+                break
+              end
             end
+            scan_byte_pos += ch.bytesize
             length += 1
           end
 
@@ -1126,9 +1127,15 @@ module YAML
           @simple_key_allowed = false
 
           if !first
-            io << spaces.to_s
+            case pending_space
+            when 1_u8 then io << ' '
+            when 2_u8 then io << '\n'
+            when 3_u8
+              trailing_break_count.times { io << '\n' }
+            end
           end
-          spaces = String::Builder.new
+          pending_space = 0_u8
+          trailing_break_count = 0
           first = false
 
           length.times do
@@ -1143,22 +1150,20 @@ module YAML
           break unless is_blank_or_break?(peek)
 
           # Collect whitespace
-          ws_count = 0
           break_count = 0
-          trailing_breaks = String::Builder.new
 
           while is_blank?(peek)
             advance
           end
 
           if is_break?(peek)
-            lb = scan_line_break
+            scan_line_break
             break_count += 1
             @simple_key_allowed = true
 
             # Skip blank lines
             while is_break?(peek)
-              trailing_breaks << scan_line_break
+              scan_line_break
               break_count += 1
             end
 
@@ -1172,17 +1177,15 @@ module YAML
               break
             end
 
-            if break_count == 1 && trailing_breaks.bytesize == 0
-              spaces << ' '
+            if break_count == 1
+              pending_space = 1_u8 # fold: single break becomes space
             else
-              if trailing_breaks.bytesize > 0
-                spaces << trailing_breaks.to_s
-              else
-                spaces << '\n'
-              end
+              # Multiple breaks: emit all trailing breaks (all but first, which is consumed as fold)
+              trailing_break_count = break_count - 1
+              pending_space = 3_u8
             end
           else
-            spaces << ' '
+            pending_space = 1_u8 # inline whitespace becomes space
           end
         end
       end
@@ -1314,19 +1317,20 @@ module YAML
       end
     end
 
-    private def scan_line_break : String
+    @[AlwaysInline]
+    private def scan_line_break : Char
       ch = peek
       if ch == '\r' && peek(1) == '\n'
         advance(2)
-        "\n"
+        '\n'
       elsif ch == '\r' || ch == '\n'
         advance
-        "\n"
+        '\n'
       elsif ch == '\u0085' || ch == '\u2028' || ch == '\u2029'
         advance
-        "\n"
+        '\n'
       else
-        ""
+        '\0'
       end
     end
 
@@ -1347,22 +1351,27 @@ module YAML
 
     # --- Character classification ---
 
+    @[AlwaysInline]
     private def is_blank?(ch : Char) : Bool
       ch == ' ' || ch == '\t'
     end
 
+    @[AlwaysInline]
     private def is_blank_byte?(b : UInt8) : Bool
       b == ' '.ord || b == '\t'.ord
     end
 
+    @[AlwaysInline]
     private def is_break?(ch : Char) : Bool
       ch == '\n' || ch == '\r' || ch == '\u0085' || ch == '\u2028' || ch == '\u2029'
     end
 
+    @[AlwaysInline]
     private def is_break_byte?(b : UInt8) : Bool
       b == '\n'.ord || b == '\r'.ord
     end
 
+    @[AlwaysInline]
     private def is_blank_or_break?(ch : Char) : Bool
       is_blank?(ch) || is_break?(ch)
     end
@@ -1438,6 +1447,7 @@ module YAML
       decode_char_at(byte_pos)
     end
 
+    @[AlwaysInline]
     def peek_byte(offset : Int32 = 0) : UInt8
       target = @pos + offset
       ensure_available(target)
@@ -1487,11 +1497,13 @@ module YAML
       end
     end
 
+    @[AlwaysInline]
     def eof? : Bool
       ensure_available(@pos)
       @pos >= @buffer.bytesize
     end
 
+    @[AlwaysInline]
     private def decode_char_at(byte_pos : Int32) : Char
       return '\0' if byte_pos >= @buffer.bytesize
       first = @buffer.to_unsafe[byte_pos]
@@ -1504,6 +1516,7 @@ module YAML
       end
     end
 
+    @[AlwaysInline]
     private def char_bytesize_at(byte_pos : Int32) : Int32
       return 1 if byte_pos >= @buffer.bytesize
       first = @buffer.to_unsafe[byte_pos]
@@ -1620,6 +1633,7 @@ module YAML
       end
     end
 
+    @[AlwaysInline]
     private def ensure_available(target : Int32) : Nil
       return if @eof
       while target >= @buffer.size
@@ -1643,24 +1657,21 @@ module YAML
       io = @io
       return false unless io
 
-      # Compact: keep unread portion
-      if @pos > 0
-        remaining = @buffer.bytesize - @pos
-        if remaining > 0
-          @buffer = @buffer.byte_slice(@pos)
-        else
-          @buffer = ""
-        end
-        @pos = 0
-      end
-
       bytes_read = io.read(@raw_buffer)
       if bytes_read == 0
         @eof = true
         return false
       end
 
-      @buffer = @buffer + String.new(@raw_buffer[0, bytes_read])
+      # Compact unread portion + new data into a single allocation
+      remaining = @buffer.bytesize - @pos
+      @buffer = String.build(remaining + bytes_read) do |sb|
+        if remaining > 0
+          sb.write(@buffer.to_slice[@pos, remaining])
+        end
+        sb.write(@raw_buffer[0, bytes_read])
+      end
+      @pos = 0
       true
     end
   end

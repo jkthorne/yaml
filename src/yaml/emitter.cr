@@ -848,11 +848,9 @@ module YAML
 
     private def write_raw(str : String) : Nil
       @io << str
-      if str.includes?('\n')
-        last_newline = str.rindex('\n')
-        if last_newline
-          @column = str.size - last_newline - 1
-        end
+      last_newline = str.rindex('\n')
+      if last_newline
+        @column = str.size - last_newline - 1
       else
         @column += str.size
       end

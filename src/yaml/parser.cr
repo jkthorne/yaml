@@ -44,10 +44,10 @@ module YAML
     def initialize(input : String | IO)
       @scanner = Scanner.new(input)
       @state = State::STREAM_START
-      @states = [] of State
-      @marks = [] of Mark
-      @tag_directives = [] of {String, String}
-      @context_stack = [] of {String, Mark}
+      @states = Array(State).new(16)
+      @marks = Array(Mark).new(8)
+      @tag_directives = Array({String, String}).new(4)
+      @context_stack = Array({String, Mark}).new(4)
     end
 
     def parse : Event

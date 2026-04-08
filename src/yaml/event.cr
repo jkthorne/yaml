@@ -1,5 +1,5 @@
 module YAML
-  class Event
+  struct Event
     property kind : EventKind
     property start_mark : Mark
     property end_mark : Mark
