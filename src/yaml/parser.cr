@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   class EventParser
     MAX_NESTING = 1000
 

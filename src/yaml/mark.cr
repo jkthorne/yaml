@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   struct Mark
     property index : Int32
     property line : Int32

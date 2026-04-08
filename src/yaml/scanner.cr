@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   private struct SimpleKey
     property possible : Bool
     property required : Bool

@@ -86,9 +86,9 @@ private def collect_test_cases : Array(TestCase)
   cases.sort_by(&.id)
 end
 
-private def parse_events(input : String) : Array(Yaml::Event)
-  events = [] of Yaml::Event
-  parser = Yaml::EventParser.new(input)
+private def parse_events(input : String) : Array(YAML::Event)
+  events = [] of YAML::Event
+  parser = YAML::EventParser.new(input)
   loop do
     event = parser.parse
     events << event
@@ -111,7 +111,7 @@ if suite_has_tests
       if tc.expect_error
         it "#{tc.id} - #{tc.name} (error expected)" do
           input = File.read(File.join(tc.path, "in.yaml"))
-          expect_raises(Yaml::ParseException) do
+          expect_raises(YAML::ParseException) do
             parse_events(input)
           end
         end
@@ -123,7 +123,7 @@ if suite_has_tests
 
           expected = File.read(test_event_file).strip
           events = parse_events(input)
-          actual = Yaml::EventSerializer.serialize(events).strip
+          actual = YAML::EventSerializer.serialize(events).strip
 
           actual.should eq(expected)
         end

@@ -15,11 +15,11 @@ puts "\n--- IPS: Full round-trip ---"
 Benchmark.ips do |x|
   rt_fixtures.each do |name, yaml|
     x.report("roundtrip #{name}") do
-      doc = Yaml::Nodes::Parser.new(yaml).parse
-      emitted = Yaml::Builder.build do |b|
+      doc = YAML::Nodes::Parser.new(yaml).parse
+      emitted = YAML::Builder.build do |b|
         doc.nodes.each &.to_yaml(b)
       end
-      Yaml::Nodes::Parser.new(emitted).parse
+      YAML::Nodes::Parser.new(emitted).parse
     end
   end
 end
@@ -27,11 +27,11 @@ end
 BenchHelper.memory_section("Full round-trip") do
   rt_fixtures.each do |name, yaml|
     BenchHelper.memory_report("roundtrip #{name}") do
-      doc = Yaml::Nodes::Parser.new(yaml).parse
-      emitted = Yaml::Builder.build do |b|
+      doc = YAML::Nodes::Parser.new(yaml).parse
+      emitted = YAML::Builder.build do |b|
         doc.nodes.each &.to_yaml(b)
       end
-      Yaml::Nodes::Parser.new(emitted).parse
+      YAML::Nodes::Parser.new(emitted).parse
     end
   end
 end

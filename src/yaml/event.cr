@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   class Event
     property kind : EventKind
     property start_mark : Mark

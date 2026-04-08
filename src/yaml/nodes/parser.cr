@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   module Nodes
     class Parser
       @pull_parser : PullParser

@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   module EventSerializer
     def self.serialize(events : Array(Event)) : String
       String.build do |io|

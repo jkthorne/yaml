@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   enum EventKind
     NONE
     STREAM_START

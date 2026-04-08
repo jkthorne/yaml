@@ -2,7 +2,7 @@
 
 A pure Crystal YAML 1.1 parser and emitter. No C dependencies — no libyaml, no FFI.
 
-The API mirrors Crystal's stdlib `YAML::PullParser` and `YAML::Builder`, so switching from the stdlib is straightforward. The module is named `Yaml` (not `YAML`) to coexist with the stdlib without conflict.
+This is a pure Crystal replacement for Crystal's stdlib YAML module (which wraps libyaml). The API mirrors the stdlib's `YAML::PullParser` and `YAML::Builder`, so switching is straightforward. Do not require both this shard and Crystal's stdlib `yaml` in the same program.
 
 ## Installation
 
@@ -27,7 +27,7 @@ require "yaml"
 **PullParser** provides SAX-style event-driven parsing:
 
 ```crystal
-parser = Yaml::PullParser.new("name: Crystal\nversion: 1.19")
+parser = YAML::PullParser.new("name: Crystal\nversion: 1.19")
 
 parser.read_stream do
   parser.read_document do
@@ -45,7 +45,7 @@ Works with `IO` too:
 
 ```crystal
 File.open("config.yml") do |file|
-  parser = Yaml::PullParser.new(file)
+  parser = YAML::PullParser.new(file)
   # ...
 end
 ```
@@ -53,13 +53,13 @@ end
 **Nodes::Parser** builds a DOM tree:
 
 ```crystal
-doc = Yaml::Nodes::Parser.new("users:\n- Alice\n- Bob").parse
-root = doc.nodes[0].as(Yaml::Nodes::Mapping)
+doc = YAML::Nodes::Parser.new("users:\n- Alice\n- Bob").parse
+root = doc.nodes[0].as(YAML::Nodes::Mapping)
 
-key = root.nodes[0].as(Yaml::Nodes::Scalar)
+key = root.nodes[0].as(YAML::Nodes::Scalar)
 key.value # => "users"
 
-seq = root.nodes[1].as(Yaml::Nodes::Sequence)
+seq = root.nodes[1].as(YAML::Nodes::Sequence)
 seq.nodes.size # => 2
 ```
 
@@ -68,7 +68,7 @@ seq.nodes.size # => 2
 **Builder** generates YAML text:
 
 ```crystal
-yaml = Yaml::Builder.build do |builder|
+yaml = YAML::Builder.build do |builder|
   builder.mapping do
     builder.scalar("name")
     builder.scalar("my-app")
@@ -92,8 +92,8 @@ puts yaml
 Flow style collections:
 
 ```crystal
-yaml = Yaml::Builder.build do |builder|
-  builder.mapping(style: Yaml::MappingStyle::FLOW) do
+yaml = YAML::Builder.build do |builder|
+  builder.mapping(style: YAML::MappingStyle::FLOW) do
     builder.scalar("a")
     builder.scalar("1")
   end
@@ -114,13 +114,13 @@ The parser preserves and the builder accepts all five YAML scalar styles:
 | `FOLDED` | `>` | folds newlines to spaces |
 
 ```crystal
-builder.scalar("has\nnewlines", style: Yaml::ScalarStyle::LITERAL)
+builder.scalar("has\nnewlines", style: YAML::ScalarStyle::LITERAL)
 ```
 
 ### Anchors and aliases
 
 ```crystal
-parser = Yaml::PullParser.new("- &default config\n- *default")
+parser = YAML::PullParser.new("- &default config\n- *default")
 parser.read_stream do
   parser.read_document do
     parser.read_sequence do
@@ -128,7 +128,7 @@ parser.read_stream do
       parser.value  # => "config"
       parser.read_next
 
-      parser.kind   # => Yaml::EventKind::ALIAS
+      parser.kind   # => YAML::EventKind::ALIAS
       parser.anchor # => "default"
       parser.read_next
     end
@@ -141,7 +141,7 @@ end
 Standard YAML tag shorthands (`!!str`, `!!int`, etc.) are resolved automatically:
 
 ```crystal
-parser = Yaml::PullParser.new("!!str 42")
+parser = YAML::PullParser.new("!!str 42")
 # parser.tag => "tag:yaml.org,2002:str"
 # parser.value => "42"
 ```
@@ -205,7 +205,6 @@ crystal run --release bench/parse_bench.cr     # parsing (Nodes + PullParser)
 crystal run --release bench/scan_bench.cr      # tokenizer isolation
 crystal run --release bench/emit_bench.cr      # emitter / Builder
 crystal run --release bench/roundtrip_bench.cr # parse → emit → parse
-crystal run --release bench/compare_bench.cr   # vs Crystal stdlib (libyaml)
 ```
 
 Each benchmark reports iterations/second (`Benchmark.ips`) and memory allocations (`Benchmark.memory`). Fixtures are generated programmatically at runtime — no static files to maintain.

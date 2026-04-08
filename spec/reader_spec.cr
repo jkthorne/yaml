@@ -1,9 +1,9 @@
 require "./spec_helper"
 
-describe Yaml::Scanner do
+describe YAML::Scanner do
   describe "String input" do
     it "peeks characters" do
-      scanner = Yaml::Scanner.new("abc")
+      scanner = YAML::Scanner.new("abc")
       scanner.peek(0).should eq('a')
       scanner.peek(1).should eq('b')
       scanner.peek(2).should eq('c')
@@ -11,7 +11,7 @@ describe Yaml::Scanner do
     end
 
     it "advances and peeks" do
-      scanner = Yaml::Scanner.new("hello")
+      scanner = YAML::Scanner.new("hello")
       scanner.peek.should eq('h')
       scanner.advance
       scanner.peek.should eq('e')
@@ -22,7 +22,7 @@ describe Yaml::Scanner do
     end
 
     it "tracks line and column" do
-      scanner = Yaml::Scanner.new("ab\ncd")
+      scanner = YAML::Scanner.new("ab\ncd")
       scanner.mark.line.should eq(0)
       scanner.mark.column.should eq(0)
       scanner.advance(2) # past 'a', 'b'
@@ -35,7 +35,7 @@ describe Yaml::Scanner do
     end
 
     it "handles multi-byte UTF-8 characters" do
-      scanner = Yaml::Scanner.new("héllo")
+      scanner = YAML::Scanner.new("héllo")
       scanner.peek(0).should eq('h')
       scanner.peek(1).should eq('é')
       scanner.peek(2).should eq('l')
@@ -46,7 +46,7 @@ describe Yaml::Scanner do
     end
 
     it "handles 3-byte UTF-8 characters" do
-      scanner = Yaml::Scanner.new("日本語")
+      scanner = YAML::Scanner.new("日本語")
       scanner.peek(0).should eq('日')
       scanner.peek(1).should eq('本')
       scanner.peek(2).should eq('語')
@@ -55,7 +55,7 @@ describe Yaml::Scanner do
     end
 
     it "handles 4-byte UTF-8 characters (emoji)" do
-      scanner = Yaml::Scanner.new("\u{1F600}ok")
+      scanner = YAML::Scanner.new("\u{1F600}ok")
       scanner.peek(0).should eq('\u{1F600}')
       scanner.peek(1).should eq('o')
       scanner.advance
@@ -63,19 +63,19 @@ describe Yaml::Scanner do
     end
 
     it "returns prefix" do
-      scanner = Yaml::Scanner.new("hello world")
+      scanner = YAML::Scanner.new("hello world")
       scanner.prefix(5).should eq("hello")
       scanner.advance(6)
       scanner.prefix(5).should eq("world")
     end
 
     it "returns eof correctly" do
-      scanner = Yaml::Scanner.new("")
+      scanner = YAML::Scanner.new("")
       scanner.eof?.should be_true
     end
 
     it "gets source line" do
-      scanner = Yaml::Scanner.new("line one\nline two\nline three")
+      scanner = YAML::Scanner.new("line one\nline two\nline three")
       scanner.get_source_line(0).should eq("line one")
       scanner.get_source_line(1).should eq("line two")
       scanner.get_source_line(2).should eq("line three")
@@ -86,7 +86,7 @@ describe Yaml::Scanner do
   describe "IO input" do
     it "peeks and advances from IO" do
       io = IO::Memory.new("hello world")
-      scanner = Yaml::Scanner.new(io)
+      scanner = YAML::Scanner.new(io)
       scanner.peek(0).should eq('h')
       scanner.peek(1).should eq('e')
       scanner.advance(6)
@@ -97,7 +97,7 @@ describe Yaml::Scanner do
       # Create input larger than initial buffer
       large = "a" * 70000
       io = IO::Memory.new(large)
-      scanner = Yaml::Scanner.new(io)
+      scanner = YAML::Scanner.new(io)
       scanner.peek(0).should eq('a')
       # Advance past the initial buffer size
       50000.times { scanner.advance }
@@ -107,7 +107,7 @@ describe Yaml::Scanner do
 
     it "detects eof from IO" do
       io = IO::Memory.new("ab")
-      scanner = Yaml::Scanner.new(io)
+      scanner = YAML::Scanner.new(io)
       scanner.advance(2)
       scanner.eof?.should be_true
     end

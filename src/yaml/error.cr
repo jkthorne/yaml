@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   class Error < Exception
   end
 

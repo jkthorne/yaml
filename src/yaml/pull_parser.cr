@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   class PullParser
     getter kind : EventKind
     getter start_line : Int32

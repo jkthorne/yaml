@@ -55,7 +55,7 @@ describe "UTF-16 encoding support" do
     it "parses a simple scalar from IO" do
       bytes = encode_utf16le("hello")
       io = IO::Memory.new(bytes)
-      parser = Yaml::PullParser.new(io)
+      parser = YAML::PullParser.new(io)
       parser.read_stream do
         parser.read_document do
           parser.read_scalar.should eq("hello")
@@ -66,7 +66,7 @@ describe "UTF-16 encoding support" do
     it "parses a mapping from IO" do
       bytes = encode_utf16le("key: value")
       io = IO::Memory.new(bytes)
-      parser = Yaml::PullParser.new(io)
+      parser = YAML::PullParser.new(io)
       parser.read_stream do
         parser.read_document do
           parser.read_mapping do
@@ -80,7 +80,7 @@ describe "UTF-16 encoding support" do
     it "parses a sequence from IO" do
       bytes = encode_utf16le("- one\n- two\n- three")
       io = IO::Memory.new(bytes)
-      parser = Yaml::PullParser.new(io)
+      parser = YAML::PullParser.new(io)
       parser.read_stream do
         parser.read_document do
           parser.read_sequence do
@@ -95,7 +95,7 @@ describe "UTF-16 encoding support" do
     it "parses from String (raw bytes)" do
       bytes = encode_utf16le("hello")
       str = String.new(bytes)
-      parser = Yaml::PullParser.new(str)
+      parser = YAML::PullParser.new(str)
       parser.read_stream do
         parser.read_document do
           parser.read_scalar.should eq("hello")
@@ -108,7 +108,7 @@ describe "UTF-16 encoding support" do
     it "parses a simple scalar from IO" do
       bytes = encode_utf16be("hello")
       io = IO::Memory.new(bytes)
-      parser = Yaml::PullParser.new(io)
+      parser = YAML::PullParser.new(io)
       parser.read_stream do
         parser.read_document do
           parser.read_scalar.should eq("hello")
@@ -119,7 +119,7 @@ describe "UTF-16 encoding support" do
     it "parses a mapping from IO" do
       bytes = encode_utf16be("key: value")
       io = IO::Memory.new(bytes)
-      parser = Yaml::PullParser.new(io)
+      parser = YAML::PullParser.new(io)
       parser.read_stream do
         parser.read_document do
           parser.read_mapping do
@@ -136,7 +136,7 @@ describe "UTF-16 encoding support" do
       # U+1F600 (grinning face) requires surrogate pair
       bytes = encode_utf16le("emoji: \u{1F600}")
       io = IO::Memory.new(bytes)
-      parser = Yaml::PullParser.new(io)
+      parser = YAML::PullParser.new(io)
       parser.read_stream do
         parser.read_document do
           parser.read_mapping do
@@ -150,7 +150,7 @@ describe "UTF-16 encoding support" do
     it "handles emoji in UTF-16BE" do
       bytes = encode_utf16be("emoji: \u{1F600}")
       io = IO::Memory.new(bytes)
-      parser = Yaml::PullParser.new(io)
+      parser = YAML::PullParser.new(io)
       parser.read_stream do
         parser.read_document do
           parser.read_mapping do
@@ -166,7 +166,7 @@ describe "UTF-16 encoding support" do
     it "parses explicit document with UTF-16LE" do
       bytes = encode_utf16le("---\nhello\n...")
       io = IO::Memory.new(bytes)
-      parser = Yaml::PullParser.new(io)
+      parser = YAML::PullParser.new(io)
       parser.read_stream do
         parser.read_document do
           parser.read_scalar.should eq("hello")
@@ -178,19 +178,19 @@ describe "UTF-16 encoding support" do
   describe "original encoding detection" do
     it "detects UTF-16LE encoding" do
       bytes = encode_utf16le("hello")
-      scanner = Yaml::Scanner.new(IO::Memory.new(bytes))
-      scanner.original_encoding.should eq(Yaml::Encoding::UTF16LE)
+      scanner = YAML::Scanner.new(IO::Memory.new(bytes))
+      scanner.original_encoding.should eq(YAML::Encoding::UTF16LE)
     end
 
     it "detects UTF-16BE encoding" do
       bytes = encode_utf16be("hello")
-      scanner = Yaml::Scanner.new(IO::Memory.new(bytes))
-      scanner.original_encoding.should eq(Yaml::Encoding::UTF16BE)
+      scanner = YAML::Scanner.new(IO::Memory.new(bytes))
+      scanner.original_encoding.should eq(YAML::Encoding::UTF16BE)
     end
 
     it "detects UTF-8 for plain input" do
-      scanner = Yaml::Scanner.new("hello")
-      scanner.original_encoding.should eq(Yaml::Encoding::UTF8)
+      scanner = YAML::Scanner.new("hello")
+      scanner.original_encoding.should eq(YAML::Encoding::UTF8)
     end
   end
 end

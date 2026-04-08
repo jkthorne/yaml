@@ -21,7 +21,7 @@ module BenchHelper
 
   def self.validate!
     FIXTURES.each do |name, yaml|
-      Yaml::Nodes::Parser.new(yaml).parse
+      YAML::Nodes::Parser.new(yaml).parse
       print "  ✓ #{name} (#{yaml.bytesize} bytes)\n"
     end
   end

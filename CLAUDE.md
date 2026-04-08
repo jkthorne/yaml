@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Pure Crystal YAML 1.1 parser and emitter with no C dependencies (no libyaml, no FFI). The module is named `Yaml` (not `YAML`) to coexist with Crystal's stdlib. Requires Crystal >= 1.19.1.
+Pure Crystal YAML 1.1 parser and emitter with no C dependencies (no libyaml, no FFI). This is a drop-in replacement for Crystal's stdlib YAML module — do not require both in the same program. Requires Crystal >= 1.19.1.
 
 ## Commands
 

@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   class Builder
     property max_nesting : Int32
 

@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   enum TokenKind
     STREAM_START
     STREAM_END

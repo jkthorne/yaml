@@ -4,7 +4,7 @@ set -e
 echo "=== Compiling and running benchmarks (--release) ==="
 echo ""
 
-for bench in parse scan emit roundtrip compare; do
+for bench in parse scan emit roundtrip; do
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo " Running: ${bench}_bench.cr"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

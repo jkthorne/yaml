@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   class Emitter
     private enum EmitterState
       STREAM_START

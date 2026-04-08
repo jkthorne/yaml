@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   module Nodes
     abstract class Node
       property tag : String?
@@ -17,7 +17,7 @@ module Yaml
         @end_column = 0
       end
 
-      abstract def to_yaml(builder : Yaml::Builder) : Nil
+      abstract def to_yaml(builder : YAML::Builder) : Nil
     end
 
     class Document
@@ -40,7 +40,7 @@ module Yaml
         super()
       end
 
-      def to_yaml(builder : Yaml::Builder) : Nil
+      def to_yaml(builder : YAML::Builder) : Nil
         builder.scalar(value, anchor: anchor, tag: tag, style: style)
       end
     end
@@ -59,7 +59,7 @@ module Yaml
         self
       end
 
-      def to_yaml(builder : Yaml::Builder) : Nil
+      def to_yaml(builder : YAML::Builder) : Nil
         builder.sequence(anchor: anchor, tag: tag, style: style) do
           nodes.each &.to_yaml(builder)
         end
@@ -81,7 +81,7 @@ module Yaml
         @nodes << value
       end
 
-      def to_yaml(builder : Yaml::Builder) : Nil
+      def to_yaml(builder : YAML::Builder) : Nil
         builder.mapping(anchor: anchor, tag: tag, style: style) do
           nodes.each &.to_yaml(builder)
         end
@@ -95,7 +95,7 @@ module Yaml
         super()
       end
 
-      def to_yaml(builder : Yaml::Builder) : Nil
+      def to_yaml(builder : YAML::Builder) : Nil
         builder.alias(alias_anchor)
       end
     end

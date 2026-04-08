@@ -1,4 +1,4 @@
-module Yaml
+module YAML
   module Nodes
     class Builder
       getter document : Document

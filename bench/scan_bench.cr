@@ -15,10 +15,10 @@ puts "\n--- IPS: Scanner (consume all tokens) ---"
 Benchmark.ips do |x|
   scan_fixtures.each do |name, yaml|
     x.report("scan #{name}") do
-      scanner = Yaml::Scanner.new(yaml)
+      scanner = YAML::Scanner.new(yaml)
       loop do
         token = scanner.scan
-        break if token.kind == Yaml::TokenKind::STREAM_END
+        break if token.kind == YAML::TokenKind::STREAM_END
       end
     end
   end
@@ -27,10 +27,10 @@ end
 BenchHelper.memory_section("Scanner (consume all tokens)") do
   scan_fixtures.each do |name, yaml|
     BenchHelper.memory_report("scan #{name}") do
-      scanner = Yaml::Scanner.new(yaml)
+      scanner = YAML::Scanner.new(yaml)
       loop do
         token = scanner.scan
-        break if token.kind == Yaml::TokenKind::STREAM_END
+        break if token.kind == YAML::TokenKind::STREAM_END
       end
     end
   end

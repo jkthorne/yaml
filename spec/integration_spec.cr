@@ -3,12 +3,12 @@ require "./spec_helper"
 describe "Integration" do
   it "parses shard.yml" do
     content = File.read("shard.yml")
-    parser = Yaml::PullParser.new(content)
+    parser = YAML::PullParser.new(content)
     parser.read_stream do
       parser.read_document do
         parser.read_mapping do
           keys = [] of String
-          while parser.kind != Yaml::EventKind::MAPPING_END
+          while parser.kind != YAML::EventKind::MAPPING_END
             keys << parser.read_scalar
             parser.skip
           end
@@ -21,7 +21,7 @@ describe "Integration" do
   end
 
   it "round-trips a simple mapping through builder" do
-    result = Yaml::Builder.build do |builder|
+    result = YAML::Builder.build do |builder|
       builder.mapping do
         builder.scalar("name")
         builder.scalar("yaml")
@@ -31,7 +31,7 @@ describe "Integration" do
     end
 
     # Parse the output back
-    parser = Yaml::PullParser.new(result)
+    parser = YAML::PullParser.new(result)
     parser.read_stream do
       parser.read_document do
         parser.read_mapping do
@@ -46,7 +46,7 @@ describe "Integration" do
 
   it "handles multiline plain scalars" do
     yaml = "key: this is\n  a multiline\n  value"
-    parser = Yaml::PullParser.new(yaml)
+    parser = YAML::PullParser.new(yaml)
     parser.read_stream do
       parser.read_document do
         parser.read_mapping do
@@ -60,7 +60,7 @@ describe "Integration" do
 
   it "handles multiple documents" do
     yaml = "---\nfirst\n---\nsecond\n..."
-    parser = Yaml::PullParser.new(yaml)
+    parser = YAML::PullParser.new(yaml)
     parser.read_stream do
       parser.read_document do
         parser.read_scalar.should eq("first")
@@ -83,7 +83,7 @@ describe "Integration" do
     - logging
     - monitoring
     YAML
-    parser = Yaml::PullParser.new(yaml)
+    parser = YAML::PullParser.new(yaml)
     parser.read_stream do
       parser.read_document do
         parser.read_mapping do
@@ -113,7 +113,7 @@ describe "Integration" do
 
   it "handles literal block scalar" do
     yaml = "content: |\n  line one\n  line two\n"
-    parser = Yaml::PullParser.new(yaml)
+    parser = YAML::PullParser.new(yaml)
     parser.read_stream do
       parser.read_document do
         parser.read_mapping do
@@ -127,7 +127,7 @@ describe "Integration" do
 
   it "handles folded block scalar" do
     yaml = "content: >\n  folded\n  text\n"
-    parser = Yaml::PullParser.new(yaml)
+    parser = YAML::PullParser.new(yaml)
     parser.read_stream do
       parser.read_document do
         parser.read_mapping do
@@ -141,10 +141,10 @@ describe "Integration" do
 
   it "handles tags" do
     yaml = "!!str 42"
-    parser = Yaml::PullParser.new(yaml)
+    parser = YAML::PullParser.new(yaml)
     parser.read_stream do
       parser.read_document do
-        parser.kind.should eq(Yaml::EventKind::SCALAR)
+        parser.kind.should eq(YAML::EventKind::SCALAR)
         parser.tag.should eq("tag:yaml.org,2002:str")
         parser.value.should eq("42")
         parser.read_next
@@ -154,20 +154,20 @@ describe "Integration" do
 
   it "parses node tree from complex YAML" do
     yaml = "users:\n- name: Alice\n  age: 30\n- name: Bob\n  age: 25"
-    doc = Yaml::Nodes::Parser.new(yaml).parse
-    root = doc.nodes[0].as(Yaml::Nodes::Mapping)
-    key = root.nodes[0].as(Yaml::Nodes::Scalar)
+    doc = YAML::Nodes::Parser.new(yaml).parse
+    root = doc.nodes[0].as(YAML::Nodes::Mapping)
+    key = root.nodes[0].as(YAML::Nodes::Scalar)
     key.value.should eq("users")
-    seq = root.nodes[1].as(Yaml::Nodes::Sequence)
+    seq = root.nodes[1].as(YAML::Nodes::Sequence)
     seq.nodes.size.should eq(2)
-    first_user = seq.nodes[0].as(Yaml::Nodes::Mapping)
-    (first_user.nodes[0].as(Yaml::Nodes::Scalar)).value.should eq("name")
-    (first_user.nodes[1].as(Yaml::Nodes::Scalar)).value.should eq("Alice")
+    first_user = seq.nodes[0].as(YAML::Nodes::Mapping)
+    (first_user.nodes[0].as(YAML::Nodes::Scalar)).value.should eq("name")
+    (first_user.nodes[1].as(YAML::Nodes::Scalar)).value.should eq("Alice")
   end
 
   it "handles double-quoted escape sequences" do
     yaml = %("tab:\\there\\nnewline")
-    parser = Yaml::PullParser.new(yaml)
+    parser = YAML::PullParser.new(yaml)
     parser.read_stream do
       parser.read_document do
         parser.read_scalar.should eq("tab:\there\nnewline")
@@ -177,7 +177,7 @@ describe "Integration" do
 
   it "handles empty values in mapping" do
     yaml = "key:"
-    parser = Yaml::PullParser.new(yaml)
+    parser = YAML::PullParser.new(yaml)
     parser.read_stream do
       parser.read_document do
         parser.read_mapping do
@@ -190,7 +190,7 @@ describe "Integration" do
 
   it "handles nested flow collections" do
     yaml = "{a: [1, 2], b: {c: 3}}"
-    parser = Yaml::PullParser.new(yaml)
+    parser = YAML::PullParser.new(yaml)
     parser.read_stream do
       parser.read_document do
         parser.read_mapping do
