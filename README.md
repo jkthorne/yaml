@@ -205,9 +205,10 @@ crystal run --release bench/parse_bench.cr     # parsing (Nodes + PullParser)
 crystal run --release bench/scan_bench.cr      # tokenizer isolation
 crystal run --release bench/emit_bench.cr      # emitter / Builder
 crystal run --release bench/roundtrip_bench.cr # parse → emit → parse
+bash bench/compare.sh                         # vs Crystal stdlib (libyaml)
 ```
 
-Each benchmark reports iterations/second (`Benchmark.ips`) and memory allocations (`Benchmark.memory`). Fixtures are generated programmatically at runtime — no static files to maintain.
+Each benchmark reports iterations/second (`Benchmark.ips`) and memory allocations (`Benchmark.memory`). Fixtures are generated programmatically at runtime — no static files to maintain. The comparison benchmark compiles two separate binaries (one using this library, one using stdlib) since they cannot coexist in the same program.
 
 ## Development
 

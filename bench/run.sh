@@ -12,4 +12,10 @@ for bench in parse scan emit roundtrip; do
   echo ""
 done
 
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo " Running: compare.sh (vs stdlib/libyaml)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+bash "bench/compare.sh"
+echo ""
+
 echo "=== All benchmarks complete ==="
