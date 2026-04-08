@@ -8,6 +8,7 @@ module Yaml
 
     getter mark : Mark
     getter encoding : Encoding
+    getter original_encoding : Encoding
 
     @buffer : String
     @pos : Int32
@@ -18,10 +19,12 @@ module Yaml
     @raw_buffer : Bytes
     @raw_pos : Int32
     @raw_len : Int32
+    @leftover_byte : UInt8?
 
     def initialize(string : String)
       @mark = Mark.new
       @encoding = Encoding::UTF8
+      @original_encoding = Encoding::UTF8
       @buffer = string
       @pos = 0
       @eof = true # entire input is already in @buffer
@@ -29,12 +32,15 @@ module Yaml
       @raw_buffer = Bytes.empty
       @raw_pos = 0
       @raw_len = 0
+      @leftover_byte = nil
       detect_bom
+      transcode_if_needed
     end
 
     def initialize(io : IO)
       @mark = Mark.new
       @encoding = Encoding::UTF8
+      @original_encoding = Encoding::UTF8
       @buffer = ""
       @pos = 0
       @eof = false
@@ -42,8 +48,10 @@ module Yaml
       @raw_buffer = Bytes.new(BUFFER_SIZE)
       @raw_pos = 0
       @raw_len = 0
+      @leftover_byte = nil
       fill_buffer
       detect_bom
+      transcode_if_needed
     end
 
     def peek(offset : Int32 = 0) : Char
@@ -151,16 +159,71 @@ module Yaml
       bytes = @buffer.to_slice
       if @buffer.bytesize >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF
         @encoding = Encoding::UTF8
+        @original_encoding = Encoding::UTF8
         @pos = 3
         @mark.index = 3
       elsif bytes[0] == 0xFE && bytes[1] == 0xFF
         @encoding = Encoding::UTF16BE
+        @original_encoding = Encoding::UTF16BE
         @pos = 2
         @mark.index = 2
       elsif bytes[0] == 0xFF && bytes[1] == 0xFE
         @encoding = Encoding::UTF16LE
+        @original_encoding = Encoding::UTF16LE
         @pos = 2
         @mark.index = 2
+      end
+    end
+
+    private def transcode_if_needed : Nil
+      return if @encoding == Encoding::UTF8
+
+      big_endian = @encoding == Encoding::UTF16BE
+      raw = @buffer.to_slice[@pos, @buffer.bytesize - @pos]
+      @buffer = transcode_utf16_bytes(raw, big_endian)
+      @pos = 0
+      @mark.index = 0
+      @encoding = Encoding::UTF8
+    end
+
+    private def transcode_utf16_bytes(bytes : Bytes, big_endian : Bool) : String
+      String.build do |io|
+        i = 0
+        while i + 1 < bytes.size
+          code_unit = if big_endian
+                        (bytes[i].to_u16 << 8) | bytes[i + 1].to_u16
+                      else
+                        bytes[i].to_u16 | (bytes[i + 1].to_u16 << 8)
+                      end
+          i += 2
+
+          codepoint = if code_unit >= 0xD800_u16 && code_unit <= 0xDBFF_u16
+                        if i + 1 < bytes.size
+                          low = if big_endian
+                                  (bytes[i].to_u16 << 8) | bytes[i + 1].to_u16
+                                else
+                                  bytes[i].to_u16 | (bytes[i + 1].to_u16 << 8)
+                                end
+                          if low >= 0xDC00_u16 && low <= 0xDFFF_u16
+                            i += 2
+                            ((code_unit.to_u32 - 0xD800) << 10) + (low.to_u32 - 0xDC00) + 0x10000
+                          else
+                            0xFFFD_u32
+                          end
+                        else
+                          @leftover_byte = bytes[i] if i < bytes.size
+                          0xFFFD_u32
+                        end
+                      else
+                        code_unit.to_u32
+                      end
+
+          io << codepoint.chr
+        end
+
+        if i < bytes.size
+          @leftover_byte = bytes[i]
+        end
       end
     end
 
@@ -183,6 +246,34 @@ module Yaml
       @buffer = String.new(@raw_buffer[0, bytes_read])
     end
 
+    private def read_chunk_from_io : String?
+      io = @io
+      return nil unless io
+
+      bytes_read = io.read(@raw_buffer)
+      if bytes_read == 0
+        @eof = true
+        return nil
+      end
+
+      raw = @raw_buffer[0, bytes_read]
+
+      if @original_encoding == Encoding::UTF8
+        String.new(raw)
+      else
+        chunk = if leftover = @leftover_byte
+                  @leftover_byte = nil
+                  combined = Bytes.new(raw.size + 1)
+                  combined[0] = leftover
+                  raw.copy_to(combined.to_unsafe + 1, raw.size)
+                  combined
+                else
+                  raw
+                end
+        transcode_utf16_bytes(chunk, @original_encoding == Encoding::UTF16BE)
+      end
+    end
+
     private def read_more : Bool
       io = @io
       return false unless io
@@ -198,13 +289,10 @@ module Yaml
         @pos = 0
       end
 
-      bytes_read = io.read(@raw_buffer)
-      if bytes_read == 0
-        @eof = true
-        return false
-      end
+      chunk = read_chunk_from_io
+      return false unless chunk
 
-      @buffer = @buffer + String.new(@raw_buffer[0, bytes_read])
+      @buffer = @buffer + chunk
       true
     end
   end
