@@ -28,6 +28,7 @@ module Yaml
     @simple_key_allowed : Bool
     @simple_keys : Array(SimpleKey)
     @flow_level : Int32
+    @context_stack : Array({String, Mark})
 
     def initialize(input : String | IO)
       @reader = Reader.new(input)
@@ -41,6 +42,7 @@ module Yaml
       @simple_key_allowed = false
       @simple_keys = [SimpleKey.new]
       @flow_level = 0
+      @context_stack = [] of {String, Mark}
     end
 
     def scan : Token
@@ -184,6 +186,7 @@ module Yaml
 
     private def scan_directive : Nil
       start_mark = @reader.mark
+      push_context("directive", start_mark)
       @reader.advance # skip '%'
 
       name = scan_directive_name(start_mark)
@@ -216,6 +219,7 @@ module Yaml
         end
         scan_directive_trailing(start_mark)
       end
+      pop_context
     end
 
     private def scan_directive_name(start_mark : Mark) : String
@@ -442,6 +446,7 @@ module Yaml
 
     private def scan_anchor_or_alias(kind : TokenKind) : Nil
       start_mark = @reader.mark
+      push_context(kind == TokenKind::ALIAS ? "alias" : "anchor", start_mark)
       @reader.advance # skip '*' or '&'
 
       value = String.build do |io|
@@ -462,6 +467,7 @@ module Yaml
         scanner_error("while scanning an #{context}, found unexpected character", start_mark)
       end
 
+      pop_context
       @tokens.push(Token.new(
         kind: kind,
         start_mark: start_mark,
@@ -480,6 +486,7 @@ module Yaml
 
     private def scan_tag : Nil
       start_mark = @reader.mark
+      push_context("tag", start_mark)
       @reader.advance # skip first '!'
 
       handle : String
@@ -532,6 +539,7 @@ module Yaml
         scanner_error("while scanning a tag, did not find expected whitespace or line break", start_mark)
       end
 
+      pop_context
       @tokens.push(Token.new(
         kind: TokenKind::TAG,
         start_mark: start_mark,
@@ -619,6 +627,7 @@ module Yaml
 
     private def scan_block_scalar(literal : Bool) : Nil
       start_mark = @reader.mark
+      push_context(literal ? "literal block scalar" : "folded block scalar", start_mark)
       @reader.advance # skip '|' or '>'
 
       # Scan the header: chomping and indent indicator
@@ -759,6 +768,7 @@ module Yaml
         end
       end
 
+      pop_context
       @tokens.push(Token.new(
         kind: TokenKind::SCALAR,
         start_mark: start_mark,
@@ -778,6 +788,7 @@ module Yaml
 
     private def scan_flow_scalar(single : Bool) : Nil
       start_mark = @reader.mark
+      push_context(single ? "single-quoted scalar" : "double-quoted scalar", start_mark)
       @reader.advance # skip quote
 
       value = String.build do |io|
@@ -869,6 +880,7 @@ module Yaml
       end
 
       @reader.advance # skip closing quote
+      pop_context
       @tokens.push(Token.new(
         kind: TokenKind::SCALAR,
         start_mark: start_mark,
@@ -928,6 +940,7 @@ module Yaml
 
     private def scan_plain_scalar : Nil
       start_mark = @reader.mark
+      push_context("plain scalar", start_mark)
       end_mark = start_mark
       indent = @indent + 1
 
@@ -1030,6 +1043,7 @@ module Yaml
         end
       end
 
+      pop_context
       @tokens.push(Token.new(
         kind: TokenKind::SCALAR,
         start_mark: start_mark,
@@ -1239,8 +1253,24 @@ module Yaml
 
     # --- Error ---
 
+    private def push_context(description : String, mark : Mark) : Nil
+      @context_stack.push({description, mark})
+    end
+
+    private def pop_context : Nil
+      @context_stack.pop?
+    end
+
     private def scanner_error(message : String, mark : Mark) : NoReturn
-      raise ParseException.new(message, mark.line + 1, mark.column + 1)
+      context_info = if ctx = @context_stack.last?
+                       desc, ctx_mark = ctx
+                       "while scanning a #{desc} started at line #{ctx_mark.line + 1} column #{ctx_mark.column + 1}"
+                     else
+                       nil
+                     end
+      source_snippet = @reader.get_source_line(mark.line)
+      raise ParseException.new(message, mark.line + 1, mark.column + 1,
+        context_info: context_info, source_snippet: source_snippet)
     end
   end
 end

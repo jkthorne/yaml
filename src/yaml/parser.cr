@@ -39,6 +39,7 @@ module Yaml
     @states : Array(State)
     @marks : Array(Mark)
     @tag_directives : Array({String, String})
+    @context_stack : Array({String, Mark})
 
     def initialize(input : String | IO)
       @scanner = Scanner.new(input)
@@ -46,6 +47,7 @@ module Yaml
       @states = [] of State
       @marks = [] of Mark
       @tag_directives = [] of {String, String}
+      @context_stack = [] of {String, Mark}
     end
 
     def parse : Event
@@ -401,6 +403,7 @@ module Yaml
     private def parse_block_sequence_entry(first : Bool) : Event
       if first
         token = peek_token
+        push_context("block sequence", token.start_mark)
         @marks.push(token.start_mark)
         skip_token
       end
@@ -423,6 +426,7 @@ module Yaml
       if token.kind.block_end?
         @state = @states.pop
         @marks.pop
+        pop_context
         skip_token
         return Event.new(
           kind: EventKind::SEQUENCE_END,
@@ -465,6 +469,7 @@ module Yaml
     private def parse_block_mapping_key(first : Bool) : Event
       if first
         token = peek_token
+        push_context("block mapping", token.start_mark)
         @marks.push(token.start_mark)
         skip_token
       end
@@ -492,6 +497,7 @@ module Yaml
       if token.kind.block_end?
         @state = @states.pop
         @marks.pop
+        pop_context
         skip_token
         return Event.new(
           kind: EventKind::MAPPING_END,
@@ -528,6 +534,7 @@ module Yaml
     private def parse_flow_sequence_entry(first : Bool) : Event
       if first
         token = peek_token
+        push_context("flow sequence", token.start_mark)
         @marks.push(token.start_mark)
         skip_token
       end
@@ -564,6 +571,7 @@ module Yaml
 
       @state = @states.pop
       @marks.pop
+      pop_context
       skip_token
       Event.new(
         kind: EventKind::SEQUENCE_END,
@@ -617,6 +625,7 @@ module Yaml
     private def parse_flow_mapping_key(first : Bool) : Event
       if first
         token = peek_token
+        push_context("flow mapping", token.start_mark)
         @marks.push(token.start_mark)
         skip_token
       end
@@ -652,6 +661,7 @@ module Yaml
 
       @state = @states.pop
       @marks.pop
+      pop_context
       skip_token
       Event.new(
         kind: EventKind::MAPPING_END,
@@ -727,8 +737,22 @@ module Yaml
       end
     end
 
+    private def push_context(description : String, mark : Mark) : Nil
+      @context_stack.push({description, mark})
+    end
+
+    private def pop_context : Nil
+      @context_stack.pop?
+    end
+
     private def parser_error(message : String, mark : Mark) : NoReturn
-      raise ParseException.new(message, mark.line + 1, mark.column + 1)
+      context_info = if ctx = @context_stack.last?
+                       desc, ctx_mark = ctx
+                       "while parsing a #{desc} started at line #{ctx_mark.line + 1} column #{ctx_mark.column + 1}"
+                     else
+                       nil
+                     end
+      raise ParseException.new(message, mark.line + 1, mark.column + 1, context_info: context_info)
     end
   end
 end

@@ -114,6 +114,37 @@ module Yaml
       end
     end
 
+    def get_source_line(line : Int32) : String?
+      current_line = 0
+      i = 0
+      while i < @buffer.bytesize
+        if current_line == line
+          end_i = i
+          while end_i < @buffer.bytesize
+            byte = @buffer.to_unsafe[end_i]
+            break if byte === '\n'.ord || byte === '\r'.ord
+            end_i += 1
+          end
+          len = end_i - i
+          return nil if len == 0
+          result = @buffer.byte_slice(i, Math.min(len, 120))
+          return len > 120 ? result + "..." : result
+        end
+        byte = @buffer.to_unsafe[i]
+        if byte === '\n'.ord
+          current_line += 1
+          i += 1
+        elsif byte === '\r'.ord
+          current_line += 1
+          i += 1
+          i += 1 if i < @buffer.bytesize && @buffer.to_unsafe[i] === '\n'.ord
+        else
+          i += 1
+        end
+      end
+      nil
+    end
+
     private def detect_bom : Nil
       return if @buffer.bytesize < 2
 
