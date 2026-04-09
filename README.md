@@ -190,25 +190,34 @@ Events --> Nodes::Parser --> Document tree
 - No schema/type resolution (scalars are always strings — apply your own schema layer)
 - Simple key limit of 1024 characters (matching libyaml)
 
-## Benchmarks
+## Performance
 
-Run the full benchmark suite (requires `--release` for meaningful results):
+Comparison against Crystal's stdlib YAML (which wraps libyaml, a C library). Measured with `Benchmark.ips` on Crystal 1.19, `--release` mode. Ratio > 1.0x means pure Crystal is faster.
+
+| Fixture | Size | stdlib (libyaml) | pure Crystal | Ratio | Memory (stdlib) | Memory (pure) |
+|---|---|---|---|---|---|---|
+| trivial | 11 B | 333k ips | 429k ips | **1.29x** | 640 B | 0 B |
+| flat_mapping | 1.7 KB | 12.0k ips | 12.4k ips | **1.03x** | 29.7 KiB | 46.2 KiB |
+| flow_collections | 4.8 KB | 4.7k ips | 5.2k ips | **1.12x** | 71.5 KiB | 78.1 KiB |
+| nested | 32 KB | 1.02k ips | 989 ips | 0.97x | 200.8 KiB | 497.5 KiB |
+| block_scalars | 1.6 KB | 28.9k ips | 24.5k ips | 0.85x | 8.8 KiB | 16.2 KiB |
+| strings_heavy | 6.9 KB | 8.9k ips | 5.2k ips | 0.59x | 49.7 KiB | 57.5 KiB |
+| large_config | 49 KB | 727 ips | 656 ips | 0.90x | 520.4 KiB | 787.6 KiB |
+
+**Summary:** Competitive with libyaml on small-to-medium inputs (up to ~1.3x faster), with some overhead on large documents and string-heavy workloads. The pure Crystal implementation avoids all C/FFI overhead and allocates zero bytes for trivial inputs.
+
+### Running benchmarks
 
 ```sh
-bash bench/run.sh
-```
-
-Or run individual benchmarks:
-
-```sh
-crystal run --release bench/parse_bench.cr     # parsing (Nodes + PullParser)
-crystal run --release bench/scan_bench.cr      # tokenizer isolation
-crystal run --release bench/emit_bench.cr      # emitter / Builder
+bash bench/run.sh                             # full suite
+bash bench/compare.sh                         # vs stdlib (libyaml)
+crystal run --release bench/parse_bench.cr    # parsing only
+crystal run --release bench/scan_bench.cr     # tokenizer only
+crystal run --release bench/emit_bench.cr     # emitter only
 crystal run --release bench/roundtrip_bench.cr # parse → emit → parse
-bash bench/compare.sh                         # vs Crystal stdlib (libyaml)
 ```
 
-Each benchmark reports iterations/second (`Benchmark.ips`) and memory allocations (`Benchmark.memory`). Fixtures are generated programmatically at runtime — no static files to maintain. The comparison benchmark compiles two separate binaries (one using this library, one using stdlib) since they cannot coexist in the same program.
+The comparison benchmark compiles two separate binaries (one using this library, one using stdlib) since they cannot coexist in the same program.
 
 ## Development
 
